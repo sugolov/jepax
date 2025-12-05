@@ -29,7 +29,7 @@ class FeedForward(eqx.Module):
 
 class PositionalEncoding(eqx.Module):
     """Sinusoidal positional encoding"""
-    pe: Array
+    pe: Array = eqx.field(static=True)
     
     def __init__(self, dim: int, seq_len: int = 5000):
         pe = np.zeros((seq_len, dim))
