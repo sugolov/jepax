@@ -34,7 +34,7 @@ class PatchEmbedding(eqx.Module):
     ) -> Float[Array, "num_patches embedding_dim"]:
         x = einops.rearrange(
             x,
-            "c (h ph) (w pw) -> (h w) (c ph pw)",
+            "(h ph) (w pw) c -> (h w) (c ph pw)",
             ph=self.patch_size,
             pw=self.patch_size,
         )
@@ -77,7 +77,7 @@ class ViTclassifier(eqx.Module):
         self.clf = eqx.nn.Linear(dim, num_classes, key=k3)
         self.cls_token = jax.random.normal(k4, (1, dim))
 
-    def forward(self, x, *, key=None, train=True):
+    def __call__(self, x, key, train=True):
         x = self.embed(x)
         x = jnp.concatenate([self.cls_token, x], axis=0)
         x = self.transformer(x, key=key, train=train)
