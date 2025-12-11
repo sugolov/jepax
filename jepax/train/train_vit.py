@@ -183,9 +183,9 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=5e-3)
 
-    p.add_argument("--save_dir", type=str, default="~/.checkpoints")
-    p.add_argument("--data_dir", type=str, default="~/.data")
-    p.add_argument("--aim_repo", type=str, default="~/.aim")
+    p.add_argument("--save_dir", type=str, default=".checkpoints")
+    p.add_argument("--data_dir", type=str, default=".data")
+    p.add_argument("--aim_repo", type=str, default=".aim")
 
     p.add_argument("--save_interval", type=int, default=10)
     p.add_argument("--eval_interval", type=int, default=10)
