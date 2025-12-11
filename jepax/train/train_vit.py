@@ -149,8 +149,8 @@ def train_vit_cifar10(args):
             key, eval_key = jax.random.split(key)
             test_loss, test_acc = evaluate(model, test_dataloader, eval_key)
             
-            run.track(test_loss, name="test_loss", step=step, epoch=epoch)
-            run.track(test_acc, name="test_acc", step=step, epoch=epoch)
+            run.track(test_loss.item(), name="test_loss", step=step, epoch=epoch)
+            run.track(test_acc.item(), name="test_acc", step=step, epoch=epoch)
             
             print(f"Epoch: {epoch}/{args.epochs}, Avg Loss: {avg_loss:.4f}, "
                   f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}")
