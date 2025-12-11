@@ -152,10 +152,10 @@ def train_vit_cifar10(args):
             run.track(test_loss.item(), name="test_loss", step=step, epoch=epoch)
             run.track(test_acc.item(), name="test_acc", step=step, epoch=epoch)
             
-            print(f"Epoch: {epoch}/{args.epochs}, Avg Loss: {avg_loss:.4f}, "
+            print(f"Epoch: {epoch+1}/{args.epochs}, Avg Loss: {avg_loss:.4f}, "
                   f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}")
             
-            logf.write(f"{epoch},{avg_loss:.4f},{test_loss:.4f},{test_acc:.4f}\n")
+            logf.write(f"{epoch+1},{avg_loss:.4f},{test_loss:.4f},{test_acc:.4f}\n")
             logf.flush()
         elif (epoch % args.print_interval) == 0 or epoch == args.epochs - 1:
             print(f"Epoch: {epoch}/{args.epochs}, Step: {step}, Avg Loss: {avg_loss:.4f}")
