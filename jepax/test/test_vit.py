@@ -5,7 +5,7 @@ from jepax.model.vit import PatchEmbedding, ViTclassifier
 def test_patch_embedding():
     key = jax.random.PRNGKey(0)
     embed = PatchEmbedding(input_channels=3, output_shape=64, patch_size=4, key=key)
-    x = jax.random.normal(key, (3, 32, 32))
+    x = jax.random.normal(key, (32, 32, 3))
     out = embed(x)
     assert out.shape == (64, 64)
     print("✓ PatchEmbedding")
@@ -25,8 +25,8 @@ def test_vit_classifier():
         key=k1
     )
     
-    x = jax.random.normal(k2, (3, 32, 32))
-    logits = model.forward(x, key=k3, train=True)
+    x = jax.random.normal(k2, (32, 32, 3))
+    logits = model(x, key=k3, train=True)
     assert logits.shape == (10,)
     print("✓ ViTclassifier")
 
@@ -45,8 +45,8 @@ def test_vit_batched():
         key=k1
     )
     
-    x_batch = jax.random.normal(k2, (8, 3, 32, 32))
+    x_batch = jax.random.normal(k2, (8, 32, 32, 3))
     keys = jax.random.split(k3, 8)
-    logits = jax.vmap(lambda x, k: model.forward(x, key=k, train=True))(x_batch, keys)
+    logits = jax.vmap(lambda x, k: model(x, key=k, train=True))(x_batch, keys)
     assert logits.shape == (8, 10)
     print("✓ ViTclassifier batched")
