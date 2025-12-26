@@ -1,12 +1,10 @@
-import os, functools
+import os
 import argparse
 from pathlib import Path
 from datetime import datetime
 
 import jax
 from jax import numpy as jnp
-import numpy as np
-import einops
 import equinox as eqx
 import optax
 
@@ -17,12 +15,14 @@ from jepax.data import build_dataset
 from jepax.model import get_vit_clf_model
 from jepax.train import save_checkpoint
 
+
 def load_checkpoint(path, model_name, num_classes, seed):
     import json
+
     with open(path + "_meta.json", "r") as f:
         checkpoint = json.load(f)
 
-    args = argparse.Namespace(**checkpoint['args'])
+    args = argparse.Namespace(**checkpoint["args"])
 
     key = jax.random.key(seed)
     model = get_vit_clf_model(name=model_name, num_classes=num_classes, key=key)
@@ -33,13 +33,15 @@ def load_checkpoint(path, model_name, num_classes, seed):
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
 
-    return model, opt_state, checkpoint['epoch'], args
+    return model, opt_state, checkpoint["epoch"], args
+
 
 @eqx.filter_value_and_grad
 def compute_grads(model, x, y, key):
     logits = jax.vmap(model, in_axes=(0, 0, None))(x, key, True)
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, y)
     return jnp.mean(loss)
+
 
 @eqx.filter_jit
 def step_model(model, optimizer, state, x, y, key):
@@ -49,6 +51,7 @@ def step_model(model, optimizer, state, x, y, key):
     model = eqx.apply_updates(model, updates)
 
     return model, new_state, loss
+
 
 @eqx.filter_jit
 def eval_step(model, x, y, key):
@@ -64,7 +67,7 @@ def evaluate(model, dataloader, key):
     """Evaluate model on entire dataset."""
     losses = []
     accs = []
-    
+
     for x, y in dataloader:
         key, subkey = jax.random.split(key)
         # Create keys for each sample in batch
@@ -72,8 +75,9 @@ def evaluate(model, dataloader, key):
         loss, acc = eval_step(model, x, y, subkeys)
         losses.append(loss)
         accs.append(acc)
-    
+
     return sum(losses) / len(losses), sum(accs) / len(accs)
+
 
 def train_vit_cifar10(args):
     # setup
@@ -99,7 +103,7 @@ def train_vit_cifar10(args):
         args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        is_train=True
+        is_train=True,
     )
 
     test_dataloader, _, _, _ = build_dataset(
@@ -107,16 +111,15 @@ def train_vit_cifar10(args):
         args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        is_train=False
+        is_train=False,
     )
-
 
     # initialize model state
     key, key_model = jax.random.split(jax.random.PRNGKey(args.seed))
     model = get_vit_clf_model(args.model_name, num_classes=num_classes, key=key_model)
     optimizer = optax.adamw(learning_rate=args.lr)
     state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
-    
+
     losses = []
     step = 0
 
@@ -129,13 +132,12 @@ def train_vit_cifar10(args):
     for epoch in range(args.epochs):
         epoch_losses = []
 
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{args.epochs}")
 
-        
-        for x,y in pbar:
+        for x, y in pbar:
             key, *subkeys = jax.random.split(key, num=x.shape[0] + 1)
             subkeys = jnp.array(subkeys)
-            
+
             model, state, loss = step_model(model, optimizer, state, x, y, subkeys)
             epoch_losses.append(loss)
             losses.append(loss)
@@ -148,23 +150,28 @@ def train_vit_cifar10(args):
         if (epoch % args.eval_interval) == 0 or epoch == args.epochs - 1:
             key, eval_key = jax.random.split(key)
             test_loss, test_acc = evaluate(model, test_dataloader, eval_key)
-            
+
             run.track(test_loss.item(), name="test_loss", step=step, epoch=epoch)
             run.track(test_acc.item(), name="test_acc", step=step, epoch=epoch)
-            
-            print(f"Epoch: {epoch+1}/{args.epochs}, Avg Loss: {avg_loss:.4f}, "
-                  f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}")
-            
-            logf.write(f"{epoch+1},{avg_loss:.4f},{test_loss:.4f},{test_acc:.4f}\n")
+
+            print(
+                f"Epoch: {epoch + 1}/{args.epochs}, Avg Loss: {avg_loss:.4f}, "
+                f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}"
+            )
+
+            logf.write(f"{epoch + 1},{avg_loss:.4f},{test_loss:.4f},{test_acc:.4f}\n")
             logf.flush()
         elif (epoch % args.print_interval) == 0 or epoch == args.epochs - 1:
-            print(f"Epoch: {epoch}/{args.epochs}, Step: {step}, Avg Loss: {avg_loss:.4f}")
+            print(
+                f"Epoch: {epoch}/{args.epochs}, Step: {step}, Avg Loss: {avg_loss:.4f}"
+            )
             logf.write(f"{epoch},{avg_loss:.4f},N/A,N/A\n")
             logf.flush()
 
-        
         if (epoch + 1) % args.save_interval == 0:
-            checkpoint_path = os.path.join(args.save_dir, f"{run_name}_epoch_{epoch+1}")
+            checkpoint_path = os.path.join(
+                args.save_dir, f"{run_name}_epoch_{epoch + 1}"
+            )
             save_checkpoint(model, state, epoch + 1, args, checkpoint_path)
             print(f"Saved checkpoint to {checkpoint_path}")
 

@@ -1,6 +1,10 @@
 import jax
-import jax.numpy as jnp
-from jepax.model.transformer import FeedForward, Attention, TransformerBlock, Transformer
+from jepax.model.transformer import (
+    FeedForward,
+    Attention,
+    TransformerBlock,
+    Transformer,
+)
 
 
 def test_feedforward():
@@ -46,7 +50,7 @@ def test_batched():
     key = jax.random.PRNGKey(0)
     k1, k2, k3 = jax.random.split(key, 3)
     model = Transformer(dim=64, num_layers=2, num_head=4, key=k1)
-    
+
     x_batch = jax.random.normal(k2, (4, 10, 64))
     keys = jax.random.split(k3, 4)
     out = jax.vmap(lambda x, k: model(x, key=k, train=True))(x_batch, keys)
