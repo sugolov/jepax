@@ -5,7 +5,7 @@ description = "Joint-Embedding Predictive Architectures (JEPAs) in JAX"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-  {name = "Anton Sugolov", email = "a@.com"},
+  {name = "Anton Sugolov", email = "a@gmail.com"},
   {name = "Owen Lockwood", email = "contact_owenl@protonmail.com"}
 ]
 keywords = ["jax", "machine-learning", "self-supervised-learning", "jepa"]

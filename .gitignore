@@ -212,3 +212,4 @@ __marimo__/
 __pycache__
 slurm
 *.DS_Store
+claude*

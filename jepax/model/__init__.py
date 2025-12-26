@@ -1,5 +1,5 @@
 from jepax.model.vit import ViTclassifier
-from jaxtyping import Float, Array, PRNGKeyArray
+from jaxtyping import PRNGKeyArray
 
 
 vit_classifier_configs = {

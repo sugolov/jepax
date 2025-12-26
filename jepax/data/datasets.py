@@ -13,7 +13,11 @@ def numpy_collate(batch):
     images, labels = zip(*batch)
     images = torch.stack(images).numpy()  # (B, C, H, W)
     images = np.ascontiguousarray(np.transpose(images, (0, 2, 3, 1)))  # (B, H, W, C)
-    labels = np.array(labels)
+    # Handle both int labels (CIFAR) and tensor labels (CelebA attributes)
+    if isinstance(labels[0], torch.Tensor):
+        labels = torch.stack(labels).numpy()
+    else:
+        labels = np.array(labels)
     return images, labels
 
 
@@ -30,6 +34,8 @@ def build_dataset(
         image_size = 32
     elif dataset_name in ["IMAGENET", "IMNET"]:
         image_size = 224
+    elif dataset_name == "CELEBA":
+        image_size = 64
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
@@ -64,6 +70,17 @@ def build_dataset(
         root = os.path.join(data_dir, "train" if is_train else "val")
         dataset = datasets.ImageFolder(root, transform=transform)
         num_classes = 1000
+    elif dataset_name == "CELEBA":
+        split = "train" if is_train else "valid"
+        dataset = datasets.CelebA(
+            data_dir,
+            split=split,
+            target_type="attr",
+            transform=transform,
+            download=True,
+        )
+        # hardcode?
+        num_classes = 40
 
     dataloader = DataLoader(
         dataset,

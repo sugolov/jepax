@@ -1,12 +1,10 @@
-import os, functools
+import os
 import argparse
 from pathlib import Path
 from datetime import datetime
 
 import jax
 from jax import numpy as jnp
-import numpy as np
-import einops
 import equinox as eqx
 import optax
 

@@ -6,6 +6,7 @@ from typing import Optional
 from jaxtyping import Array, Key, Float
 
 
+# todo: sequence matrix typevar
 class FeedForward(eqx.Module):
     """A 2 layer feedforward network"""
 
@@ -20,7 +21,7 @@ class FeedForward(eqx.Module):
         self.linear2 = eqx.nn.Linear(dmid, dim, key=k2)
         self.norm = eqx.nn.LayerNorm(dmid)
 
-    def __call__(self, x):
+    def __call__(self, x: Float[Array, "S D"]) -> Float[Array, "S D"]:
         # x: (S, D)
         x = jax.nn.gelu(jax.vmap(self.linear1)(x))
         x = jax.vmap(self.norm)(x)
@@ -41,7 +42,7 @@ class PositionalEncoding(eqx.Module):
         pe[:, 1::2] = np.cos(position * div_term)
         self.pe = jnp.array(pe)
 
-    def __call__(self, x):
+    def __call__(self, x: Float[Array, "S D"]) -> Float[Array, "S D"]:
         # x: (S, D)
         seq_len = x.shape[0]
         return x + jax.lax.stop_gradient(self.pe[:seq_len])
@@ -59,7 +60,7 @@ class Attention(eqx.Module):
         self.mha = eqx.nn.MultiheadAttention(num_head, dim, key=key)
         self.causal = causal
 
-    def __call__(self, x):
+    def __call__(self, x: Float[Array, "S D"]) -> Float[Array, "S dim"]:
         # x: (S, D)
         S, D = x.shape
         mask = jnp.tri(S, S).T if self.causal else None
@@ -90,7 +91,13 @@ class TransformerBlock(eqx.Module):
         self.ln2 = eqx.nn.LayerNorm(dim)
         self.dropout = eqx.nn.Dropout(p_drop)
 
-    def __call__(self, x, *, key: Optional[Key[Array, ""]] = None, train: bool = True):
+    def __call__(
+        self,
+        x: Float[Array, "S D"],
+        *,
+        key: Optional[Key[Array, ""]] = None,
+        train: bool = True,
+    ):
         # x: (S, D)
         if key is not None:
             k1, k2 = jax.random.split(key)
@@ -138,7 +145,13 @@ class Transformer(eqx.Module):
         ]
         self.pe = PositionalEncoding(dim=dim, seq_len=seq_len)
 
-    def __call__(self, x, *, key: Optional[Key[Array, ""]] = None, train: bool = True):
+    def __call__(
+        self,
+        x: Float[Array, "S D"],
+        *,
+        key: Optional[Key[Array, ""]] = None,
+        train: bool = True,
+    ):
         # x: (S, D)
         x = self.pe(x)
 
