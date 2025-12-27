@@ -341,7 +341,6 @@ def main():
             ctx_masks = [jnp.array(m) for m in ctx_masks]
             tgt_masks = [jnp.array(m) for m in tgt_masks]
 
-            key, subkey = jax.random.split(key)
             model, opt_state, loss = train_step(
                 model,
                 target_encoder,
@@ -350,7 +349,6 @@ def main():
                 batch_imgs,
                 ctx_masks,
                 tgt_masks,
-                subkey,
             )
 
             momentum = ema_schedule[min(step, total_steps - 1)]
