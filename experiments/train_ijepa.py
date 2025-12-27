@@ -91,12 +91,10 @@ def train_step(
 ):
     def loss_fn(model):
         losses = []
-        for i in range(len(batch)):
-            loss = forward_single(
-                model, target_encoder, batch[i], ctx_masks[i], tgt_masks[i]
-            )
-            losses.append(loss)
-        return jnp.mean(jnp.stack(losses))
+        losses = eqx.filter_vmap(forward_single, in_axes=(None, None, 0, 0, 0))(
+            model, target_encoder, batch, ctx_masks, tgt_masks
+        )
+        return jnp.mean(losses)
 
     loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
     updates, opt_state = optimizer.update(
@@ -332,10 +330,8 @@ def main():
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
         for batch_imgs, _ in pbar:
-            print("in batch")
             batch_imgs = jnp.array(batch_imgs)
 
-            print("masks")
             # todo: more efficient JAX loading? (eval speed)
             ctx_masks, tgt_masks, _ = mask_collator(
                 mask_rng, batch_size=len(batch_imgs)
@@ -343,7 +339,6 @@ def main():
             ctx_masks = [jnp.array(m) for m in ctx_masks]
             tgt_masks = [jnp.array(m) for m in tgt_masks]
 
-            print("train")
             model, opt_state, loss = train_step(
                 model,
                 target_encoder,
@@ -353,7 +348,6 @@ def main():
                 ctx_masks,
                 tgt_masks,
             )
-            print("ema")
 
             momentum = ema_schedule[min(step, total_steps - 1)]
             target_encoder = ema_update(model.encoder, target_encoder, momentum)
