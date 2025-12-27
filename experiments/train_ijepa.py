@@ -11,7 +11,7 @@ import optax
 from tqdm import tqdm
 
 from jepax.data.datasets import build_dataset
-from jepax.model.ijepa import IJEPA, ema_update
+from jepax.model.ijepa import IJEPA, IJEPAEncoder, ema_update
 from jepax.masks import MaskCollator
 
 
@@ -267,15 +267,15 @@ def main():
         num_heads=args.num_heads,
         key=model_key,
     )
-    target_encoder = IJEPA(
+    # this is hard coded to match the IJEPA init, which isn't ideal, let's just copy weights
+    k1, k2 = jax.random.split(model_key)
+    target_encoder = IJEPAEncoder(
         img_size=img_size,
         patch_size=patch_size,
         embed_dim=args.embed_dim,
-        encoder_depth=args.encoder_depth,
-        predictor_dim=args.predictor_dim,
-        predictor_depth=args.predictor_depth,
+        depth=args.encoder_depth,
         num_heads=args.num_heads,
-        key=model_key,
+        key=k1,
     )
 
     n_params = sum(x.size for x in jax.tree.leaves(eqx.filter(model, eqx.is_array)))
