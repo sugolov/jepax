@@ -332,8 +332,10 @@ def main():
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
         for batch_imgs, _ in pbar:
+            print("in batch")
             batch_imgs = jnp.array(batch_imgs)
 
+            print("masks")
             # todo: more efficient JAX loading? (eval speed)
             ctx_masks, tgt_masks, _ = mask_collator(
                 mask_rng, batch_size=len(batch_imgs)
@@ -341,6 +343,7 @@ def main():
             ctx_masks = [jnp.array(m) for m in ctx_masks]
             tgt_masks = [jnp.array(m) for m in tgt_masks]
 
+            print("train")
             model, opt_state, loss = train_step(
                 model,
                 target_encoder,
@@ -350,6 +353,7 @@ def main():
                 ctx_masks,
                 tgt_masks,
             )
+            print("ema")
 
             momentum = ema_schedule[min(step, total_steps - 1)]
             target_encoder = ema_update(model.encoder, target_encoder, momentum)
