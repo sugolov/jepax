@@ -87,9 +87,10 @@ def build_dataset(
         batch_size=batch_size,
         shuffle=is_train,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=is_train,
         collate_fn=numpy_collate,
+        persistent_workers=num_workers > 0,
     )
 
     return dataloader, num_classes, len(dataset), image_size

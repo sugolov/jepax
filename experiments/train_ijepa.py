@@ -43,10 +43,10 @@ def parse_args():
     p.add_argument("--save_dir", type=str, default="./checkpoints")
     p.add_argument("--data_dir", type=str, default="~/data")
     # Model
-    p.add_argument("--embed_dim", type=int, default=384)
-    p.add_argument("--encoder_depth", type=int, default=12)
-    p.add_argument("--predictor_dim", type=int, default=192)
-    p.add_argument("--predictor_depth", type=int, default=6)
+    p.add_argument("--embed_dim", type=int, default=256)
+    p.add_argument("--encoder_depth", type=int, default=8)
+    p.add_argument("--predictor_dim", type=int, default=128)
+    p.add_argument("--predictor_depth", type=int, default=4)
     p.add_argument("--num_heads", type=int, default=6)
     # Masking
     p.add_argument("--n_pred_masks", type=int, default=4)
