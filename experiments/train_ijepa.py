@@ -15,6 +15,15 @@ from jepax.model.ijepa import IJEPA, ema_update
 from jepax.masks import MaskCollator
 
 
+def get_patch_size(dataset: str) -> int:
+    return {
+        "cifar10": 4,  # 32x32 -> 8x8 = 64 patches
+        "cifar100": 4,  # 32x32 -> 8x8 = 64 patches
+        "celeba": 8,  # 64x64 -> 8x8 = 64 patches
+        "imagenet": 14,  # 224x224 -> 16x16 = 256 patches
+    }[dataset.lower()]
+
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--exp_name", type=str, default="ijepa")
@@ -23,7 +32,7 @@ def parse_args():
         type=str,
         default="celeba",
         choices=["cifar10", "cifar100", "celeba", "imagenet"],
-        help="Dataset to train on (determines image size)",
+        help="Dataset to train on",
     )
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch_size", type=int, default=128)
@@ -34,7 +43,6 @@ def parse_args():
     p.add_argument("--save_dir", type=str, default="./checkpoints")
     p.add_argument("--data_dir", type=str, default="~/data")
     # Model
-    p.add_argument("--patch_size", type=int, default=8)
     p.add_argument("--embed_dim", type=int, default=384)
     p.add_argument("--encoder_depth", type=int, default=12)
     p.add_argument("--predictor_dim", type=int, default=192)
@@ -43,6 +51,10 @@ def parse_args():
     # Masking
     p.add_argument("--n_pred_masks", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
+
+    p.add_argument(
+        "--resume", type=str, default=None, help="Checkpoint path to resume from"
+    )
     return p.parse_args()
 
 
@@ -152,6 +164,7 @@ def evaluate_linear_probe(
     is_multilabel=False,
     n_epochs=10,
 ):
+    """Train linear probe and evaluate. Returns (top1, top5)."""
     embed_dim = encoder.embed_dim
 
     probe = LinearProbe(embed_dim, num_classes, key=key)
@@ -167,7 +180,8 @@ def evaluate_linear_probe(
                 probe, optimizer, opt_state, reps, batch_labels, is_multilabel
             )
 
-    total_correct = 0
+    total_top1 = 0
+    total_top5 = 0
     total_samples = 0
 
     # todo: can jit?
@@ -178,20 +192,22 @@ def evaluate_linear_probe(
         logits = probe.veval(reps)
 
         if is_multilabel:
-            # Multi-label: per-attribute accuracy
             preds = (jax.nn.sigmoid(logits) > 0.5).astype(jnp.int32)
             correct = (preds == batch_labels).sum()
+            total_top1 += correct
+            total_top5 += correct
             total_samples += batch_labels.size
         else:
-            # Single-label: top-1 accuracy
             preds = jnp.argmax(logits, axis=-1)
-            correct = (preds == batch_labels).sum()
+            total_top1 += (preds == batch_labels).sum()
+            top5_preds = jnp.argsort(logits, axis=-1)[:, -5:]
+            in_top5 = jnp.any(top5_preds == batch_labels[:, None], axis=-1)
+            total_top5 += in_top5.sum()
             total_samples += batch_labels.shape[0]
 
-        total_correct += correct
-
-    accuracy = float(total_correct) / total_samples
-    return accuracy
+    top1_acc = float(total_top1) / total_samples
+    top5_acc = float(total_top5) / total_samples
+    return top1_acc, top5_acc
 
 
 def save_checkpoint(model, target_encoder, opt_state, epoch, args, path):
@@ -200,6 +216,15 @@ def save_checkpoint(model, target_encoder, opt_state, epoch, args, path):
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
     with open(path + "_meta.json", "w") as f:
         json.dump({"epoch": epoch, "args": vars(args)}, f)
+
+
+def load_checkpoint(path, model, target_encoder, opt_state):
+    model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
+    target_encoder = eqx.tree_deserialise_leaves(path + "_target.eqx", target_encoder)
+    opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
+    with open(path + "_meta.json", "r") as f:
+        meta = json.load(f)
+    return model, target_encoder, opt_state, meta["epoch"]
 
 
 def main():
@@ -225,13 +250,16 @@ def main():
         num_workers=4,
     )
     n_batches = n_train // args.batch_size
-    print(f"Dataset: {args.dataset}, img_size: {img_size}, num_classes: {num_classes}")
-    print(f"Training samples: {n_train}, batches: {n_batches}")
+    patch_size = get_patch_size(args.dataset)
+    print(f"Dataset: {args.dataset}, img_size: {img_size}, patch_size: {patch_size}")
+    print(
+        f"num_classes: {num_classes}, training samples: {n_train}, batches: {n_batches}"
+    )
 
     key, model_key = jax.random.split(key)
     model = IJEPA(
         img_size=img_size,
-        patch_size=args.patch_size,
+        patch_size=patch_size,
         embed_dim=args.embed_dim,
         encoder_depth=args.encoder_depth,
         predictor_dim=args.predictor_dim,
@@ -241,7 +269,7 @@ def main():
     )
     target_encoder = IJEPA(
         img_size=img_size,
-        patch_size=args.patch_size,
+        patch_size=patch_size,
         embed_dim=args.embed_dim,
         encoder_depth=args.encoder_depth,
         predictor_dim=args.predictor_dim,
@@ -257,21 +285,49 @@ def main():
     optimizer = optax.adam(schedule)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
+    start_epoch = 0
+    if args.resume:
+        model, target_encoder, opt_state, start_epoch = load_checkpoint(
+            args.resume, model, target_encoder, opt_state
+        )
+        print(f"Resumed from {args.resume}, epoch {start_epoch}")
+
     mask_collator = MaskCollator(
         img_size=img_size,
-        patch_size=args.patch_size,
+        patch_size=patch_size,
         n_pred_masks=args.n_pred_masks,
     )
     mask_rng = np.random.default_rng(args.seed)
 
     total_steps = args.epochs * n_batches
     ema_schedule = np.linspace(args.ema_start, args.ema_end, total_steps)
-    step = 0
+    step = start_epoch * n_batches
 
-    logf = open(Path(__file__).parent / f"{args.exp_name}_log.csv", "w")
-    logf.write("epoch,loss,linear_acc\n")
+    log_path = Path(__file__).parent / f"{args.exp_name}_log.csv"
+    if args.resume:
+        logf = open(log_path, "a")
+    else:
+        logf = open(log_path, "w")
+        logf.write("epoch,loss,top1,top5\n")
 
-    for epoch in range(args.epochs):
+    is_multilabel = args.dataset.lower() == "celeba"
+
+    if not args.resume:
+        key, probe_key = jax.random.split(key)
+        top1, top5 = evaluate_linear_probe(
+            target_encoder,
+            train_loader,
+            val_loader,
+            probe_key,
+            num_classes=num_classes,
+            is_multilabel=is_multilabel,
+            n_epochs=5,
+        )
+        print(f"Epoch 0 (untrained): top1={top1:.4f}, top5={top5:.4f}")
+        logf.write(f"0,0.0,{top1:.4f},{top5:.4f}\n")
+        logf.flush()
+
+    for epoch in range(start_epoch, args.epochs):
         epoch_loss = 0.0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
@@ -307,8 +363,7 @@ def main():
         avg_loss = epoch_loss / n_batches
 
         key, probe_key = jax.random.split(key)
-        is_multilabel = args.dataset.lower() == "celeba"
-        linear_acc = evaluate_linear_probe(
+        top1, top5 = evaluate_linear_probe(
             target_encoder,
             train_loader,
             val_loader,
@@ -318,8 +373,10 @@ def main():
             n_epochs=5,
         )
 
-        print(f"Epoch {epoch + 1}: loss={avg_loss:.4f}, linear_acc={linear_acc:.4f}")
-        logf.write(f"{epoch + 1},{avg_loss:.6f},{linear_acc:.4f}\n")
+        print(
+            f"Epoch {epoch + 1}: loss={avg_loss:.4f}, top1={top1:.4f}, top5={top5:.4f}"
+        )
+        logf.write(f"{epoch + 1},{avg_loss:.6f},{top1:.4f},{top5:.4f}\n")
         logf.flush()
 
         if (epoch + 1) % args.save_interval == 0:
