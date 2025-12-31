@@ -9,7 +9,9 @@ from equinox.nn import Linear
 from typing import Optional
 from jaxtyping import Float, Array, PRNGKeyArray
 
+from jepax.model.masker import IJEPAMasker, set_token_mask
 from jepax.model.transformer import Transformer
+
 class PatchEmbedding(eqx.Module):
     linear: eqx.nn.Embedding
     patch_size: int
@@ -83,3 +85,88 @@ class ViTclassifier(eqx.Module):
         x = self.transformer(x, key=key, train=train)
         logits = self.clf(x[0])
         return logits
+    
+class JEPAViT(eqx.Module):
+    embed: PatchEmbedding
+    transformer: Transformer
+
+    def __init__(
+        self,
+        num_channels: int,
+        patch_size: int,
+        dim: int,
+        num_layers: int,
+        num_head: int,
+        mlp_ratio: float = 3.0,
+        p_drop: float = 0.1,
+        seq_len: int = 2048,
+        *,
+        key: PRNGKeyArray
+    ):
+        k1, k2, k3 = jax.random.split(key, 3)
+
+        self.embed = PatchEmbedding(num_channels, dim, patch_size, k1)
+        self.transformer = Transformer(
+            dim=dim, 
+            num_layers=num_layers,
+            num_head=num_head,
+            mlp_ratio=mlp_ratio,
+            p_drop=p_drop,
+            seq_len=seq_len,
+            key=k2
+        )
+        self.ctx_mask = jax.random.normal(k3, (1, dim))
+
+
+    def __call__(self, x, key, mask, ctx_mask=False, train=True):
+        x = self.embed(x)
+
+        if ctx_mask:
+            x = set_token_mask(x, mask.flatten(), self.ctx_mask)
+
+        x = self.transformer(x, key=key, train=train)
+
+        return x
+    
+
+class JEPAViT(eqx.Module):
+    embed: PatchEmbedding
+    transformer: Transformer
+
+    def __init__(
+        self,
+        num_channels: int,
+        patch_size: int,
+        dim: int,
+        num_layers: int,
+        num_head: int,
+        mlp_ratio: float = 3.0,
+        p_drop: float = 0.1,
+        seq_len: int = 2048,
+        *,
+        key: PRNGKeyArray
+    ):
+        k1, k2, k3 = jax.random.split(key, 3)
+
+        self.embed = PatchEmbedding(num_channels, dim, patch_size, k1)
+        self.transformer = Transformer(
+            dim=dim, 
+            num_layers=num_layers,
+            num_head=num_head,
+            mlp_ratio=mlp_ratio,
+            p_drop=p_drop,
+            seq_len=seq_len,
+            key=k2
+        )
+        self.ctx_mask = jax.random.normal(k3, (1, dim))
+
+
+    def __call__(self, x, key, mask, ctx_mask=False, train=True):
+        x = self.embed(x)
+
+        if ctx_mask:
+            x = set_token_mask(x, mask.flatten(), self.ctx_mask)
+
+        x = self.transformer(x, key=key, train=train)
+
+        return x
