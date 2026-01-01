@@ -3,7 +3,7 @@ name = "jepax"
 version = "0.1.1"
 description = "Joint-Embedding Predictive Architectures (JEPAs) in JAX"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors = [
   {name = "Anton Sugolov", email = "a@gmail.com"},
   {name = "Owen Lockwood", email = "contact_owenl@protonmail.com"}
@@ -35,7 +35,6 @@ dependencies = [
 [project.optional-dependencies]
 experiments = [
     "aim>=3.29.1",
-    "flax>=0.12.1",
     "tqdm>=4.67.1",
     "matplotlib>=3.10.7",
     "pytest>=9.0.1",

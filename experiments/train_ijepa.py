@@ -135,18 +135,18 @@ def forward_single(model, target_encoder, img, ctx_idx, tgt_blocks):
     return jnp.mean(losses)
 
 
-@eqx.filter_jit(donate="warn")
-def train_step(
-    model, target_encoder, optimizer, opt_state, batch, enc_masks, pred_masks
-):
+@eqx.filter_jit(donate="warn-except-first")
+def train_step(models, optimizer, opt_state, batch, enc_masks, pred_masks):
     """
     Train step with per-block target prediction.
 
     Args:
+        models: tuple of (model, target_encoder)
         batch: images [B, H, W, C]
         enc_masks: context masks [B, n_enc, L_enc] (usually n_enc=1)
         pred_masks: target masks [B, n_pred, L_pred] (usually n_pred=4)
     """
+    model, target_encoder = models
 
     def loss_fn(model):
         # just hardcode to use first encoder mask (n_enc=1 is standard)
@@ -163,7 +163,7 @@ def train_step(
     )
     model = eqx.apply_updates(model, updates)
 
-    return model, opt_state, loss
+    return (model, target_encoder), opt_state, loss
 
 
 class LinearProbe(eqx.Module):
@@ -519,9 +519,8 @@ def main():
                 batch_imgs = jnp.array(batch_imgs)
             t1 = time.time()
 
-            model, opt_state, loss = train_step(
-                model,
-                target_encoder,
+            (model, target_encoder), opt_state, loss = train_step(
+                (model, target_encoder),
                 optimizer,
                 opt_state,
                 batch_imgs,
