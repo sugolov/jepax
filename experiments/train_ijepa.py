@@ -5,10 +5,12 @@ from pathlib import Path
 import time
 import equinox as eqx
 import jax
+from jax.sharding import PartitionSpec as P, NamedSharding
 import jax.numpy as jnp
 import numpy as np
 import optax
 from tqdm import tqdm
+
 
 from jepax.data.datasets import build_dataset
 from jepax.model.ijepa import IJEPA, ema_update
@@ -86,6 +88,10 @@ def parse_args():
     p.add_argument(
         "--no_normalize", action="store_true", help="Disable ImageNet normalization"
     )
+
+    p.add_argument(
+        "--shard", action="store_true", help="Enable data parallelism across devices"
+    )
     return p.parse_args()
 
 
@@ -129,7 +135,7 @@ def forward_single(model, target_encoder, img, ctx_idx, tgt_blocks):
     return jnp.mean(losses)
 
 
-@eqx.filter_jit
+@eqx.filter_jit(donate="warn")
 def train_step(
     model, target_encoder, optimizer, opt_state, batch, enc_masks, pred_masks
 ):
@@ -216,10 +222,12 @@ def evaluate_linear_probe(
     is_multilabel=False,
     n_epochs=50,
     verbose=True,
+    data_sharding=None,
+    replicate_sharding=None,
 ):
     """Train linear probe and evaluate. Returns (top1, top5)."""
-
     embed_dim = encoder.embed_dim
+    use_sharding = data_sharding is not None
 
     if verbose:
         print("  Probe: extracting features...", end=" ", flush=True)
@@ -248,7 +256,14 @@ def evaluate_linear_probe(
     optimizer = optax.lars(0.05)
     opt_state = optimizer.init(eqx.filter(probe, eqx.is_array))
 
-    batch_size = 512
+    if use_sharding:
+        n_devices = len(jax.devices())
+        batch_size = 512 * n_devices
+        probe = eqx.filter_shard(probe, replicate_sharding)
+        opt_state = eqx.filter_shard(opt_state, replicate_sharding)
+    else:
+        batch_size = 512
+
     n_train = len(train_reps)
 
     t0 = time.time()
@@ -260,10 +275,18 @@ def evaluate_linear_probe(
         perm = np.random.permutation(n_train)
         for i in range(0, n_train, batch_size):
             idx = perm[i : i + batch_size]
-            batch_reps = jnp.array(train_reps[idx])
-            batch_labels = jnp.array(train_labels[idx])
+            batch_reps = train_reps[idx]
+            batch_labels_np = train_labels[idx]
+
+            if use_sharding:
+                batch_reps = jax.device_put(batch_reps, data_sharding)
+                batch_labels_arr = jax.device_put(batch_labels_np, data_sharding)
+            else:
+                batch_reps = jnp.array(batch_reps)
+                batch_labels_arr = jnp.array(batch_labels_np)
+
             probe, opt_state, _ = linear_probe_step(
-                probe, optimizer, opt_state, batch_reps, batch_labels, is_multilabel
+                probe, optimizer, opt_state, batch_reps, batch_labels_arr, is_multilabel
             )
 
     if verbose:
@@ -273,7 +296,12 @@ def evaluate_linear_probe(
         print("  Probe: evaluating...", end=" ", flush=True)
     t0 = time.time()
 
-    logits = probe.veval(jnp.array(val_reps))
+    if use_sharding:
+        val_reps_arr = jax.device_put(val_reps, data_sharding)
+    else:
+        val_reps_arr = jnp.array(val_reps)
+
+    logits = probe.veval(val_reps_arr)
 
     if is_multilabel:
         preds = (jax.nn.sigmoid(logits) > 0.5).astype(jnp.int32)
@@ -436,6 +464,26 @@ def main():
 
     is_multilabel = args.dataset.lower() == "celeba"
 
+    if args.shard:
+        n_devices = len(jax.devices())
+        mesh = jax.make_mesh((n_devices,), ("batch",))
+        data_sharding = NamedSharding(mesh, P("batch"))
+        replicate_sharding = NamedSharding(mesh, P())
+
+        model = eqx.filter_shard(model, replicate_sharding)
+        opt_state = eqx.filter_shard(opt_state, replicate_sharding)
+        target_encoder = eqx.filter_shard(target_encoder, replicate_sharding)
+        if args.batch_size % n_devices != 0:
+            raise ValueError(
+                f"batch size {args.batch_size} not divisible by {n_devices} devices"
+            )
+        print(
+            f"Sharding enabled: {n_devices} devices, batch splits to {args.batch_size // n_devices} per device"
+        )
+    else:
+        data_sharding = None
+        replicate_sharding = None
+
     if not args.resume:
         key, probe_key = jax.random.split(key)
         top1, top5 = evaluate_linear_probe(
@@ -445,6 +493,8 @@ def main():
             probe_key,
             num_classes=num_classes,
             is_multilabel=is_multilabel,
+            data_sharding=data_sharding,
+            replicate_sharding=replicate_sharding,
         )
         print(f"Epoch 0 (untrained): top1={top1:.4f}, top5={top5:.4f}")
         logf.write(f"0,0.0,{top1:.4f},{top5:.4f}\n")
@@ -456,12 +506,17 @@ def main():
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
         for batch_imgs, _ in pbar:
             t0 = time.time()
-            batch_imgs = jnp.array(batch_imgs)
 
             # enc_masks [B, n_enc, L_enc], pred_masks [B, n_pred, L_pred]
             enc_masks, pred_masks = mask_collator(mask_rng, batch_size=len(batch_imgs))
-            enc_masks = jnp.array(enc_masks)
-            pred_masks = jnp.array(pred_masks)
+            if args.shard:
+                enc_masks = jax.device_put(enc_masks, data_sharding)
+                pred_masks = jax.device_put(pred_masks, data_sharding)
+                batch_imgs = jax.device_put(batch_imgs, data_sharding)
+            else:
+                enc_masks = jnp.array(enc_masks)
+                pred_masks = jnp.array(pred_masks)
+                batch_imgs = jnp.array(batch_imgs)
             t1 = time.time()
 
             model, opt_state, loss = train_step(
@@ -501,6 +556,8 @@ def main():
             probe_key,
             num_classes=num_classes,
             is_multilabel=is_multilabel,
+            data_sharding=data_sharding,
+            replicate_sharding=replicate_sharding,
         )
 
         print(
