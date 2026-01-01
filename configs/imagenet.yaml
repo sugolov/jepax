@@ -1,0 +1,45 @@
+# I-JEPA ImageNet-1K training config (8xH100)
+
+exp_name: jepa_inet
+save_dir: ./checkpoints
+save_interval: 100
+shard: true
+
+data:
+  dataset: imagenet
+  data_dir: ~/data
+  batch_size: 2048
+  num_workers: 16
+  resize: true  # 224x224
+
+model:
+  embed_dim: 512
+  encoder_depth: 10
+  predictor_dim: 256
+  predictor_depth: 6
+  num_heads: 8
+
+train:
+  epochs: 1600
+  lr: 1.0e-3
+  start_lr: 1.0e-4
+  final_lr: 1.0e-6
+  warmup_frac: 0.01
+  wd: 0.04
+  ema_start: 0.996
+  ema_end: 1.0
+  seed: 42
+
+augment:
+  crop_scale: [0.3, 1.0]
+  horizontal_flip: false
+  normalize: true
+
+mask:
+  n_pred_masks: 4
+
+eval:
+  probe_interval: 50  # every 50 epochs
+  probe_epochs: 10
+  probe_train_max_samples: 50000
+  probe_val_max_samples: 50000

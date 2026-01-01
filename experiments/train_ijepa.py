@@ -11,7 +11,7 @@ import numpy as np
 import optax
 from tqdm import tqdm
 
-
+from jepax.config import load_config, to_dict
 from jepax.data.datasets import build_dataset
 from jepax.model.ijepa import IJEPA, ema_update
 from jepax.masks import MaskCollator
@@ -35,101 +35,35 @@ def get_patch_size(dataset: str, img_size: int) -> int:
 
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--exp_name", type=str, default="ijepa")
-    p.add_argument(
-        "--dataset",
-        type=str,
-        default="celeba",
-        choices=["cifar10", "cifar100", "celeba", "imagenet"],
-        help="Dataset to train on",
+    p = argparse.ArgumentParser(
+        description="I-JEPA training. Use --config for YAML config, CLI args override."
     )
-    p.add_argument(
-        "--resize",
-        action="store_true",
-        help="Resize images to 224x224 (to match ImageNet patch count)",
-    )
-    p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--batch_size", type=int, default=512)  # todo: FSDP
-    p.add_argument("--lr", type=float, default=3e-4, help="Peak learning rate")
-    p.add_argument("--start_lr", type=float, default=2e-4, help="Initial LR for warmup")
-    p.add_argument("--final_lr", type=float, default=1e-6, help="Final LR after decay")
-    p.add_argument(
-        "--warmup_frac",
-        type=float,
-        default=0.01,
-        help="Warmup as fraction of total epochs",
-    )
-    p.add_argument("--wd", type=float, default=0.04, help="Initial weight decay")
-    p.add_argument("--ema_start", type=float, default=0.996)
-    p.add_argument("--ema_end", type=float, default=1.0)
-    p.add_argument("--save_interval", type=int, default=10)
-    p.add_argument("--save_dir", type=str, default="./checkpoints")
-    p.add_argument("--data_dir", type=str, default="~/data")
-    p.add_argument(
-        "--num_workers",
-        type=int,
-        default=0,
-        help="PyTorch DataLoader workers.",
-    )
-    # Model
-    p.add_argument("--embed_dim", type=int, default=256)
-    p.add_argument("--encoder_depth", type=int, default=8)
-    p.add_argument("--predictor_dim", type=int, default=192)
-    p.add_argument("--predictor_depth", type=int, default=6)
-    p.add_argument("--num_heads", type=int, default=6)
-    # Masking
-    p.add_argument("--n_pred_masks", type=int, default=4)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument(
-        "--fixed_masks",
-        action="store_true",
-        help="Use fixed-length masks (avoids JAX retracing but subsamples)",
-    )
-
-    p.add_argument(
-        "--resume", type=str, default=None, help="Checkpoint path to resume from"
-    )
-
-    p.add_argument("--crop_scale_min", type=float, default=0.3, help="Min crop scale")
-    p.add_argument("--crop_scale_max", type=float, default=1.0, help="Max crop scale")
-    p.add_argument(
-        "--horizontal_flip", action="store_true", help="Enable horizontal flip"
-    )
-    p.add_argument(
-        "--no_normalize", action="store_true", help="Disable ImageNet normalization"
-    )
-
-    p.add_argument(
-        "--shard", action="store_true", help="Enable data parallelism across devices"
-    )
-
-    # Evaluation / probe
-    p.add_argument(
-        "--probe_interval",
-        type=int,
-        default=1,
-        help="Run linear probe every N epochs (0 disables).",
-    )
-    p.add_argument(
-        "--probe_epochs",
-        type=int,
-        default=50,
-        help="Number of epochs to train the linear probe when run.",
-    )
-    p.add_argument(
-        "--probe_train_max_samples",
-        type=int,
-        default=None,
-        help="Max train samples used for probe feature extraction/training (default: all).",
-    )
-    p.add_argument(
-        "--probe_val_max_samples",
-        type=int,
-        default=None,
-        help="Max val samples used for probe feature extraction/eval (default: all).",
-    )
+    p.add_argument("--config", type=str, required=True, help="Path to YAML config file")
+    p.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume")
+    # Allow CLI overrides for common params
+    p.add_argument("--epochs", type=int, help="Override train.epochs")
+    p.add_argument("--batch_size", type=int, help="Override data.batch_size")
+    p.add_argument("--lr", type=float, help="Override train.lr")
+    p.add_argument("--shard", action="store_true", help="Enable sharding")
+    p.add_argument("--no_shard", action="store_true", help="Disable sharding")
     return p.parse_args()
+
+
+def apply_cli_overrides(cfg, args):
+    """Apply CLI overrides to config."""
+    if args.resume:
+        cfg.resume = args.resume
+    if args.epochs:
+        cfg.train.epochs = args.epochs
+    if args.batch_size:
+        cfg.data.batch_size = args.batch_size
+    if args.lr:
+        cfg.train.lr = args.lr
+    if args.shard:
+        cfg.shard = True
+    if args.no_shard:
+        cfg.shard = False
+    return cfg
 
 
 def smooth_l1_loss(pred, target):
@@ -276,7 +210,11 @@ def evaluate_linear_probe(
         reps_list, labels_list = [], []
         n_seen = 0
         for batch_imgs, batch_labels in loader:
-            reps = get_representations(encoder, jnp.array(batch_imgs))
+            if use_sharding:
+                batch_imgs = jax.device_put(batch_imgs, data_sharding)
+            else:
+                batch_imgs = jnp.array(batch_imgs)
+            reps = get_representations(encoder, batch_imgs)
             reps_np = np.array(reps)
             labels_np = np.array(batch_labels)
 
@@ -373,12 +311,12 @@ def evaluate_linear_probe(
     return top1_acc, top5_acc
 
 
-def save_checkpoint(model, target_encoder, opt_state, epoch, args, path):
+def save_checkpoint(model, target_encoder, opt_state, epoch, cfg, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_target.eqx", target_encoder)
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
     with open(path + "_meta.json", "w") as f:
-        json.dump({"epoch": epoch, "args": vars(args)}, f)
+        json.dump({"epoch": epoch, "config": to_dict(cfg)}, f)
 
 
 def load_checkpoint(path, model, target_encoder, opt_state):
@@ -392,54 +330,63 @@ def load_checkpoint(path, model, target_encoder, opt_state):
 
 def main():
     args = parse_args()
-    Path(args.save_dir).mkdir(parents=True, exist_ok=True)
+    cfg = load_config(args.config)
+    cfg = apply_cli_overrides(cfg, args)
+
+    if not hasattr(cfg, "resume"):
+        cfg.resume = None
+
+    Path(cfg.save_dir).mkdir(parents=True, exist_ok=True)
 
     print(f"JAX devices: {jax.devices()}")
-    key = jax.random.key(args.seed)
+    print(f"Config: {args.config}")
+    key = jax.random.key(cfg.train.seed)
 
-    print(f"Loading {args.dataset}...")
-    resize_to = 224 if args.resize else None
-    crop_scale = (args.crop_scale_min, args.crop_scale_max)
+    resize_to = 224 if cfg.data.resize else None
+    crop_scale = tuple(cfg.augment.crop_scale)
+
+    print(f"Loading {cfg.data.dataset}...")
     train_loader, num_classes, n_train, img_size = build_dataset(
-        args.dataset,
-        args.data_dir,
-        batch_size=args.batch_size,
+        cfg.data.dataset,
+        cfg.data.data_dir,
+        batch_size=cfg.data.batch_size,
         is_train=True,
-        num_workers=args.num_workers,
+        num_workers=cfg.data.num_workers,
         img_size=resize_to,
         crop_scale=crop_scale,
-        horizontal_flip=args.horizontal_flip,
-        normalize=not args.no_normalize,
+        horizontal_flip=cfg.augment.horizontal_flip,
+        normalize=cfg.augment.normalize,
     )
     val_loader, _, _, _ = build_dataset(
-        args.dataset,
-        args.data_dir,
-        batch_size=args.batch_size,
+        cfg.data.dataset,
+        cfg.data.data_dir,
+        batch_size=cfg.data.batch_size,
         is_train=False,
-        num_workers=args.num_workers,
+        num_workers=cfg.data.num_workers,
         img_size=resize_to,
-        normalize=not args.no_normalize,
+        normalize=cfg.augment.normalize,
     )
-    n_batches = n_train // args.batch_size
-    patch_size = get_patch_size(args.dataset, img_size)
-    print(f"Dataset: {args.dataset}, img_size: {img_size}, patch_size: {patch_size}")
+    n_batches = n_train // cfg.data.batch_size
+    patch_size = get_patch_size(cfg.data.dataset, img_size)
+    print(
+        f"Dataset: {cfg.data.dataset}, img_size: {img_size}, patch_size: {patch_size}"
+    )
     print(
         f"num_classes: {num_classes}, training samples: {n_train}, batches: {n_batches}"
     )
     print(
-        f"Augmentations: crop_scale={crop_scale}, horizontal_flip={args.horizontal_flip}, "
-        f"normalize={not args.no_normalize}"
+        f"Augmentations: crop_scale={crop_scale}, horizontal_flip={cfg.augment.horizontal_flip}, normalize={cfg.augment.normalize}"
     )
 
     key, model_key = jax.random.split(key)
     model = IJEPA(
         img_size=img_size,
         patch_size=patch_size,
-        embed_dim=args.embed_dim,
-        encoder_depth=args.encoder_depth,
-        predictor_dim=args.predictor_dim,
-        predictor_depth=args.predictor_depth,
-        num_heads=args.num_heads,
+        embed_dim=cfg.model.embed_dim,
+        encoder_depth=cfg.model.encoder_depth,
+        predictor_dim=cfg.model.predictor_dim,
+        predictor_depth=cfg.model.predictor_depth,
+        num_heads=cfg.model.num_heads,
         key=model_key,
     )
     target_encoder = jax.tree.map(lambda x: x, model.encoder)
@@ -447,14 +394,14 @@ def main():
     n_params = sum(x.size for x in jax.tree.leaves(eqx.filter(model, eqx.is_array)))
     print(f"Model parameters: {n_params:,}")
 
-    total_steps = args.epochs * n_batches
-    warmup_steps = int(args.warmup_frac * total_steps)
+    total_steps = cfg.train.epochs * n_batches
+    warmup_steps = int(cfg.train.warmup_frac * total_steps)
     schedule = optax.warmup_cosine_decay_schedule(
-        init_value=args.start_lr,
-        peak_value=args.lr,
+        init_value=cfg.train.start_lr,
+        peak_value=cfg.train.lr,
         warmup_steps=warmup_steps,
         decay_steps=total_steps,
-        end_value=args.final_lr,
+        end_value=cfg.train.final_lr,
     )
 
     def map_weight_decay(param):
@@ -474,45 +421,39 @@ def main():
         [False, False],
     )
 
-    wd_schedule = optax.linear_schedule(args.wd, args.wd * 10, total_steps)
+    wd_schedule = optax.linear_schedule(cfg.train.wd, cfg.train.wd * 10, total_steps)
     optimizer = optax.adamw(learning_rate=schedule, weight_decay=wd_schedule, mask=mask)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     start_epoch = 0
-    if args.resume:
+    if cfg.resume:
         model, target_encoder, opt_state, start_epoch = load_checkpoint(
-            args.resume, model, target_encoder, opt_state
+            cfg.resume, model, target_encoder, opt_state
         )
-        print(f"Resumed from {args.resume}, epoch {start_epoch}")
+        print(f"Resumed from {cfg.resume}, epoch {start_epoch}")
 
-    if args.fixed_masks:
-        raise ValueError("Fixed lengths not currently supported")
-        print(f"Using fixed-length masks: enc_keep={enc_keep}, pred_keep={pred_keep}")
-    else:
-        pred_keep = None
-        enc_keep = None
-        print("Using variable-length masks")
+    print("Using variable-length masks")
 
     mask_collator = MaskCollator(
         img_size=img_size,
         patch_size=patch_size,
-        n_pred_masks=args.n_pred_masks,
+        n_pred_masks=cfg.mask.n_pred_masks,
     )
-    mask_rng = np.random.default_rng(args.seed)
+    mask_rng = np.random.default_rng(cfg.train.seed)
 
-    ema_schedule = np.linspace(args.ema_start, args.ema_end, total_steps)
+    ema_schedule = np.linspace(cfg.train.ema_start, cfg.train.ema_end, total_steps)
     step = start_epoch * n_batches
 
-    log_path = Path(__file__).parent / f"{args.exp_name}_log.csv"
-    if args.resume:
+    log_path = Path(__file__).parent / f"{cfg.exp_name}_log.csv"
+    if cfg.resume:
         logf = open(log_path, "a")
     else:
         logf = open(log_path, "w")
         logf.write("epoch,loss,top1,top5\n")
 
-    is_multilabel = args.dataset.lower() == "celeba"
+    is_multilabel = cfg.data.dataset.lower() == "celeba"
 
-    if args.shard:
+    if cfg.shard:
         n_devices = len(jax.devices())
         mesh = jax.make_mesh((n_devices,), ("batch",))
         data_sharding = NamedSharding(mesh, P("batch"))
@@ -521,19 +462,19 @@ def main():
         model = eqx.filter_shard(model, replicate_sharding)
         opt_state = eqx.filter_shard(opt_state, replicate_sharding)
         target_encoder = eqx.filter_shard(target_encoder, replicate_sharding)
-        if args.batch_size % n_devices != 0:
+        if cfg.data.batch_size % n_devices != 0:
             raise ValueError(
-                f"batch size {args.batch_size} not divisible by {n_devices} devices"
+                f"batch size {cfg.data.batch_size} not divisible by {n_devices} devices"
             )
         print(
-            f"Sharding enabled: {n_devices} devices, batch splits to {args.batch_size // n_devices} per device"
+            f"Sharding enabled: {n_devices} devices, batch splits to {cfg.data.batch_size // n_devices} per device"
         )
     else:
         data_sharding = None
         replicate_sharding = None
 
-    if not args.resume:
-        if args.probe_interval > 0:
+    if not cfg.resume:
+        if cfg.eval.probe_interval > 0:
             key, probe_key = jax.random.split(key)
             top1, top5 = evaluate_linear_probe(
                 target_encoder,
@@ -542,30 +483,42 @@ def main():
                 probe_key,
                 num_classes=num_classes,
                 is_multilabel=is_multilabel,
-                n_epochs=args.probe_epochs,
-                max_train_samples=args.probe_train_max_samples,
-                max_val_samples=args.probe_val_max_samples,
+                n_epochs=cfg.eval.probe_epochs,
+                max_train_samples=cfg.eval.probe_train_max_samples,
+                max_val_samples=cfg.eval.probe_val_max_samples,
                 data_sharding=data_sharding,
                 replicate_sharding=replicate_sharding,
             )
             print(f"Epoch 0 (untrained): top1={top1:.4f}, top5={top5:.4f}")
         else:
             top1, top5 = float("nan"), float("nan")
-            print("Epoch 0 (untrained): probe skipped (--probe_interval 0)")
+            print("Epoch 0 (untrained): probe skipped (probe_interval=0)")
 
         logf.write(f"0,0.0,{top1:.4f},{top5:.4f}\n")
         logf.flush()
 
-    for epoch in range(start_epoch, args.epochs):
+    seen_shapes = set()
+    slow_steps = []
+
+    for epoch in range(start_epoch, cfg.train.epochs):
         epoch_loss = 0.0
+        t_iter_end = time.time()
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
-        for batch_imgs, _ in pbar:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.train.epochs}")
+        for batch_idx, (batch_imgs, _) in enumerate(pbar):
+            t_loader = time.time()
+            t_wait = t_loader - t_iter_end
+
             t0 = time.time()
-
-            # enc_masks [B, n_enc, L_enc], pred_masks [B, n_pred, L_pred]
             enc_masks, pred_masks = mask_collator(mask_rng, batch_size=len(batch_imgs))
-            if args.shard:
+            t_mask = time.time()
+
+            shape_key = (enc_masks.shape, pred_masks.shape)
+            is_new_shape = shape_key not in seen_shapes
+            if is_new_shape:
+                seen_shapes.add(shape_key)
+
+            if cfg.shard:
                 enc_masks = jax.device_put(enc_masks, data_sharding)
                 pred_masks = jax.device_put(pred_masks, data_sharding)
                 batch_imgs = jax.device_put(batch_imgs, data_sharding)
@@ -590,20 +543,47 @@ def main():
             target_encoder = ema_update(model.encoder, target_encoder, momentum)
             t3 = time.time()
 
+            t_total = t3 - t_iter_end
+            t_iter_end = t3
+
+            if t_total > 5.0:
+                slow_steps.append(
+                    {
+                        "step": step,
+                        "total": t_total,
+                        "wait": t_wait,
+                        "mask": t_mask - t0,
+                        "xfer": t1 - t_mask,
+                        "train": t2 - t1,
+                        "ema": t3 - t2,
+                        "shape": shape_key,
+                        "new_shape": is_new_shape,
+                    }
+                )
+                print(
+                    f"\n[SLOW STEP {step}] total={t_total:.1f}s wait={t_wait:.1f}s "
+                    f"mask={t_mask - t0:.2f}s xfer={t1 - t_mask:.2f}s train={t2 - t1:.1f}s "
+                    f"shape={shape_key} new={is_new_shape}"
+                )
+
             step += 1
             epoch_loss += float(loss)
             pbar.set_postfix(
                 {
                     "loss": f"{loss:.7f}",
-                    "data": f"{t1 - t0:.3f}s",
-                    "train": f"{t2 - t1:.3f}s",
-                    "ema": f"{t3 - t2:.3f}s",
+                    "wait": f"{t_wait:.2f}s",
+                    "xfer": f"{t1 - t_mask:.2f}s",
+                    "train": f"{t2 - t1:.2f}s",
                 }
             )
 
+        print(
+            f"\nEpoch {epoch + 1} shapes seen: {len(seen_shapes)}, slow steps: {len(slow_steps)}"
+        )
+
         avg_loss = epoch_loss / n_batches
 
-        if args.probe_interval > 0 and ((epoch + 1) % args.probe_interval == 0):
+        if cfg.eval.probe_interval > 0 and ((epoch + 1) % cfg.eval.probe_interval == 0):
             key, probe_key = jax.random.split(key)
             top1, top5 = evaluate_linear_probe(
                 target_encoder,
@@ -612,9 +592,9 @@ def main():
                 probe_key,
                 num_classes=num_classes,
                 is_multilabel=is_multilabel,
-                n_epochs=args.probe_epochs,
-                max_train_samples=args.probe_train_max_samples,
-                max_val_samples=args.probe_val_max_samples,
+                n_epochs=cfg.eval.probe_epochs,
+                max_train_samples=cfg.eval.probe_train_max_samples,
+                max_val_samples=cfg.eval.probe_val_max_samples,
                 data_sharding=data_sharding,
                 replicate_sharding=replicate_sharding,
             )
@@ -628,13 +608,13 @@ def main():
         logf.write(f"{epoch + 1},{avg_loss:.6f},{top1:.4f},{top5:.4f}\n")
         logf.flush()
 
-        if (epoch + 1) % args.save_interval == 0:
-            path = os.path.join(args.save_dir, f"{args.exp_name}_epoch_{epoch + 1}")
-            save_checkpoint(model, target_encoder, opt_state, epoch + 1, args, path)
+        if (epoch + 1) % cfg.save_interval == 0:
+            path = os.path.join(cfg.save_dir, f"{cfg.exp_name}_epoch_{epoch + 1}")
+            save_checkpoint(model, target_encoder, opt_state, epoch + 1, cfg, path)
             print(f"Saved checkpoint: {path}")
 
-    path = os.path.join(args.save_dir, f"{args.exp_name}_final")
-    save_checkpoint(model, target_encoder, opt_state, args.epochs, args, path)
+    path = os.path.join(cfg.save_dir, f"{cfg.exp_name}_final")
+    save_checkpoint(model, target_encoder, opt_state, cfg.train.epochs, cfg, path)
     logf.close()
     print("Training complete!")
 
