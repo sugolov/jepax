@@ -46,7 +46,7 @@ class HFImageNet(torch.utils.data.Dataset):
         self.dataset = hf_load_dataset(
             "ILSVRC/imagenet-1k",
             split=split,
-            trust_remote_code=True,
+            keep_in_memory=True,  # Load entire dataset into RAM
         )
         self.transform = transform
 

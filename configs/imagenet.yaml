@@ -39,7 +39,7 @@ mask:
   n_pred_masks: 4
 
 eval:
-  probe_interval: 50  # every 50 epochs
+  probe_interval: 50
   probe_epochs: 10
   probe_train_max_samples: 50000
   probe_val_max_samples: 50000
