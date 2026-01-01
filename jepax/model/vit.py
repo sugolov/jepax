@@ -1,15 +1,15 @@
 import jax
 from jax import numpy as jnp
-import numpy as np
 import einops
 
 import equinox as eqx
 from equinox.nn import Linear
 
-from typing import Optional
 from jaxtyping import Float, Array, PRNGKeyArray
 
 from jepax.model.transformer import Transformer
+
+
 class PatchEmbedding(eqx.Module):
     linear: eqx.nn.Embedding
     patch_size: int
@@ -42,12 +42,12 @@ class PatchEmbedding(eqx.Module):
 
         return x
 
+
 class ViTclassifier(eqx.Module):
     embed: PatchEmbedding
     transformer: Transformer
     clf: Linear
     cls_token: jax.Array
-
 
     def __init__(
         self,
@@ -61,18 +61,18 @@ class ViTclassifier(eqx.Module):
         p_drop: float = 0.1,
         seq_len: int = 2048,
         *,
-        key: PRNGKeyArray
+        key: PRNGKeyArray,
     ):
         k1, k2, k3, k4 = jax.random.split(key, 4)
         self.embed = PatchEmbedding(num_channels, dim, patch_size, k1)
         self.transformer = Transformer(
-            dim=dim, 
+            dim=dim,
             num_layers=num_layers,
             num_head=num_head,
             mlp_ratio=mlp_ratio,
             p_drop=p_drop,
             seq_len=seq_len,
-            key=k2
+            key=k2,
         )
         self.clf = eqx.nn.Linear(dim, num_classes, key=k3)
         self.cls_token = jax.random.normal(k4, (1, dim))

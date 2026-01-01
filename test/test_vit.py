@@ -1,6 +1,6 @@
 import jax
-import jax.numpy as jnp
 from jepax.model.vit import PatchEmbedding, ViTclassifier
+
 
 def test_patch_embedding():
     key = jax.random.PRNGKey(0)
@@ -14,7 +14,7 @@ def test_patch_embedding():
 def test_vit_classifier():
     key = jax.random.PRNGKey(0)
     k1, k2, k3 = jax.random.split(key, 3)
-    
+
     model = ViTclassifier(
         num_channels=3,
         patch_size=4,
@@ -22,9 +22,9 @@ def test_vit_classifier():
         dim=64,
         num_layers=2,
         num_head=4,
-        key=k1
+        key=k1,
     )
-    
+
     x = jax.random.normal(k2, (32, 32, 3))
     logits = model(x, key=k3, train=True)
     assert logits.shape == (10,)
@@ -34,7 +34,7 @@ def test_vit_classifier():
 def test_vit_batched():
     key = jax.random.PRNGKey(0)
     k1, k2, k3 = jax.random.split(key, 3)
-    
+
     model = ViTclassifier(
         num_channels=3,
         patch_size=4,
@@ -42,9 +42,9 @@ def test_vit_batched():
         dim=64,
         num_layers=2,
         num_head=4,
-        key=k1
+        key=k1,
     )
-    
+
     x_batch = jax.random.normal(k2, (8, 32, 32, 3))
     keys = jax.random.split(k3, 8)
     logits = jax.vmap(lambda x, k: model(x, key=k, train=True))(x_batch, keys)
