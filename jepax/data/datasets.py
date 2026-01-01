@@ -7,6 +7,13 @@ from torch.utils.data import DataLoader, Subset
 
 from torchvision import datasets, transforms
 
+try:
+    from datasets import load_dataset as hf_load_dataset
+
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+
 
 def numpy_collate(batch):
     """Collate function to convert batch to numpy arrays in BHWC format"""
@@ -24,6 +31,35 @@ def numpy_collate(batch):
 # from IJEPA codebase
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
+class HFImageNet(torch.utils.data.Dataset):
+    """Wrapper for HuggingFace ImageNet-1k dataset."""
+
+    def __init__(self, split="train", transform=None):
+        if not HF_AVAILABLE:
+            raise ImportError(
+                "HuggingFace datasets not available. Install: pip install datasets\n"
+                "Then login: huggingface-cli login"
+            )
+        print(f"  Loading ImageNet from HuggingFace ({split})...")
+        self.dataset = hf_load_dataset(
+            "ILSVRC/imagenet-1k",
+            split=split,
+            trust_remote_code=True,
+        )
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        image = item["image"].convert("RGB")
+        label = item["label"]
+        if self.transform:
+            image = self.transform(image)
+        return image, label
 
 
 def build_dataset(
@@ -85,7 +121,11 @@ def build_dataset(
         num_classes = 100
     elif dataset_name in ["IMAGENET", "IMNET"]:
         root = os.path.join(data_dir, "train" if is_train else "val")
-        dataset = datasets.ImageFolder(root, transform=transform)
+        if os.path.exists(root):
+            dataset = datasets.ImageFolder(root, transform=transform)
+        else:
+            split = "train" if is_train else "validation"
+            dataset = HFImageNet(split=split, transform=transform)
         num_classes = 1000
     elif dataset_name == "CELEBA":
         split = "train" if is_train else "valid"

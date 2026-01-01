@@ -16,6 +16,11 @@ from jepax.data.datasets import build_dataset
 from jepax.model.ijepa import IJEPA, ema_update
 from jepax.masks import MaskCollator
 
+"""
+pip uninstall torch torchvision -y
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+"""
+
 
 def get_patch_size(dataset: str, img_size: int) -> int:
     # If resized to 224, use ImageNet-style patch size
@@ -61,6 +66,12 @@ def parse_args():
     p.add_argument("--save_interval", type=int, default=10)
     p.add_argument("--save_dir", type=str, default="./checkpoints")
     p.add_argument("--data_dir", type=str, default="~/data")
+    p.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
+        help="PyTorch DataLoader workers.",
+    )
     # Model
     p.add_argument("--embed_dim", type=int, default=256)
     p.add_argument("--encoder_depth", type=int, default=8)
@@ -91,6 +102,32 @@ def parse_args():
 
     p.add_argument(
         "--shard", action="store_true", help="Enable data parallelism across devices"
+    )
+
+    # Evaluation / probe
+    p.add_argument(
+        "--probe_interval",
+        type=int,
+        default=1,
+        help="Run linear probe every N epochs (0 disables).",
+    )
+    p.add_argument(
+        "--probe_epochs",
+        type=int,
+        default=50,
+        help="Number of epochs to train the linear probe when run.",
+    )
+    p.add_argument(
+        "--probe_train_max_samples",
+        type=int,
+        default=None,
+        help="Max train samples used for probe feature extraction/training (default: all).",
+    )
+    p.add_argument(
+        "--probe_val_max_samples",
+        type=int,
+        default=None,
+        help="Max val samples used for probe feature extraction/eval (default: all).",
     )
     return p.parse_args()
 
@@ -221,6 +258,8 @@ def evaluate_linear_probe(
     num_classes,
     is_multilabel=False,
     n_epochs=50,
+    max_train_samples=None,
+    max_val_samples=None,
     verbose=True,
     data_sharding=None,
     replicate_sharding=None,
@@ -233,21 +272,30 @@ def evaluate_linear_probe(
         print("  Probe: extracting features...", end=" ", flush=True)
     t0 = time.time()
 
-    train_reps, train_labels = [], []
-    for batch_imgs, batch_labels in train_loader:
-        reps = get_representations(encoder, jnp.array(batch_imgs))
-        train_reps.append(np.array(reps))
-        train_labels.append(np.array(batch_labels))
-    train_reps = np.concatenate(train_reps)
-    train_labels = np.concatenate(train_labels)
+    def extract_features(loader, max_samples):
+        reps_list, labels_list = [], []
+        n_seen = 0
+        for batch_imgs, batch_labels in loader:
+            reps = get_representations(encoder, jnp.array(batch_imgs))
+            reps_np = np.array(reps)
+            labels_np = np.array(batch_labels)
 
-    val_reps, val_labels = [], []
-    for batch_imgs, batch_labels in val_loader:
-        reps = get_representations(encoder, jnp.array(batch_imgs))
-        val_reps.append(np.array(reps))
-        val_labels.append(np.array(batch_labels))
-    val_reps = np.concatenate(val_reps)
-    val_labels = np.concatenate(val_labels)
+            if max_samples is not None and (n_seen + len(reps_np)) > max_samples:
+                take = max_samples - n_seen
+                reps_np = reps_np[:take]
+                labels_np = labels_np[:take]
+
+            reps_list.append(reps_np)
+            labels_list.append(labels_np)
+            n_seen += len(reps_np)
+
+            if max_samples is not None and n_seen >= max_samples:
+                break
+
+        return np.concatenate(reps_list), np.concatenate(labels_list)
+
+    train_reps, train_labels = extract_features(train_loader, max_train_samples)
+    val_reps, val_labels = extract_features(val_loader, max_val_samples)
 
     if verbose:
         print(f"({time.time() - t0:.1f}s)")
@@ -357,7 +405,7 @@ def main():
         args.data_dir,
         batch_size=args.batch_size,
         is_train=True,
-        num_workers=0,
+        num_workers=args.num_workers,
         img_size=resize_to,
         crop_scale=crop_scale,
         horizontal_flip=args.horizontal_flip,
@@ -368,7 +416,7 @@ def main():
         args.data_dir,
         batch_size=args.batch_size,
         is_train=False,
-        num_workers=0,
+        num_workers=args.num_workers,
         img_size=resize_to,
         normalize=not args.no_normalize,
     )
@@ -485,18 +533,26 @@ def main():
         replicate_sharding = None
 
     if not args.resume:
-        key, probe_key = jax.random.split(key)
-        top1, top5 = evaluate_linear_probe(
-            target_encoder,
-            train_loader,
-            val_loader,
-            probe_key,
-            num_classes=num_classes,
-            is_multilabel=is_multilabel,
-            data_sharding=data_sharding,
-            replicate_sharding=replicate_sharding,
-        )
-        print(f"Epoch 0 (untrained): top1={top1:.4f}, top5={top5:.4f}")
+        if args.probe_interval > 0:
+            key, probe_key = jax.random.split(key)
+            top1, top5 = evaluate_linear_probe(
+                target_encoder,
+                train_loader,
+                val_loader,
+                probe_key,
+                num_classes=num_classes,
+                is_multilabel=is_multilabel,
+                n_epochs=args.probe_epochs,
+                max_train_samples=args.probe_train_max_samples,
+                max_val_samples=args.probe_val_max_samples,
+                data_sharding=data_sharding,
+                replicate_sharding=replicate_sharding,
+            )
+            print(f"Epoch 0 (untrained): top1={top1:.4f}, top5={top5:.4f}")
+        else:
+            top1, top5 = float("nan"), float("nan")
+            print("Epoch 0 (untrained): probe skipped (--probe_interval 0)")
+
         logf.write(f"0,0.0,{top1:.4f},{top5:.4f}\n")
         logf.flush()
 
@@ -547,21 +603,28 @@ def main():
 
         avg_loss = epoch_loss / n_batches
 
-        key, probe_key = jax.random.split(key)
-        top1, top5 = evaluate_linear_probe(
-            target_encoder,
-            train_loader,
-            val_loader,
-            probe_key,
-            num_classes=num_classes,
-            is_multilabel=is_multilabel,
-            data_sharding=data_sharding,
-            replicate_sharding=replicate_sharding,
-        )
+        if args.probe_interval > 0 and ((epoch + 1) % args.probe_interval == 0):
+            key, probe_key = jax.random.split(key)
+            top1, top5 = evaluate_linear_probe(
+                target_encoder,
+                train_loader,
+                val_loader,
+                probe_key,
+                num_classes=num_classes,
+                is_multilabel=is_multilabel,
+                n_epochs=args.probe_epochs,
+                max_train_samples=args.probe_train_max_samples,
+                max_val_samples=args.probe_val_max_samples,
+                data_sharding=data_sharding,
+                replicate_sharding=replicate_sharding,
+            )
+            print(
+                f"Epoch {epoch + 1}: loss={avg_loss:.4f}, top1={top1:.4f}, top5={top5:.4f}"
+            )
+        else:
+            top1, top5 = float("nan"), float("nan")
+            print(f"Epoch {epoch + 1}: loss={avg_loss:.4f} (probe skipped)")
 
-        print(
-            f"Epoch {epoch + 1}: loss={avg_loss:.4f}, top1={top1:.4f}, top5={top5:.4f}"
-        )
         logf.write(f"{epoch + 1},{avg_loss:.6f},{top1:.4f},{top5:.4f}\n")
         logf.flush()
 
