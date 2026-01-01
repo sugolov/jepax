@@ -356,6 +356,7 @@ def main():
         crop_scale=crop_scale,
         horizontal_flip=cfg.augment.horizontal_flip,
         normalize=cfg.augment.normalize,
+        preload=getattr(cfg.data, "preload", False),
     )
     val_loader, _, _, _ = build_dataset(
         cfg.data.dataset,
@@ -365,6 +366,7 @@ def main():
         num_workers=cfg.data.num_workers,
         img_size=resize_to,
         normalize=cfg.augment.normalize,
+        preload=getattr(cfg.data, "preload", False),
     )
     n_batches = n_train // cfg.data.batch_size
     patch_size = get_patch_size(cfg.data.dataset, img_size)

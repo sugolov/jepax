@@ -36,7 +36,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 class HFImageNet(torch.utils.data.Dataset):
     """Wrapper for HuggingFace ImageNet-1k dataset."""
 
-    def __init__(self, split="train", transform=None):
+    def __init__(self, split="train", transform=None, preload=True):
         if not HF_AVAILABLE:
             raise ImportError(
                 "HuggingFace datasets not available. Install: pip install datasets\n"
@@ -46,17 +46,34 @@ class HFImageNet(torch.utils.data.Dataset):
         self.dataset = hf_load_dataset(
             "ILSVRC/imagenet-1k",
             split=split,
-            keep_in_memory=True,  # Load entire dataset into RAM
+            keep_in_memory=True,
         )
         self.transform = transform
+        self.preloaded_images = None
+        self.labels = None
+
+        if preload:
+            print(f"  Pre-decoding {len(self.dataset)} images into RAM...")
+            from tqdm import tqdm
+
+            self.preloaded_images = []
+            self.labels = []
+            for item in tqdm(self.dataset, desc="  Preloading"):
+                self.preloaded_images.append(item["image"].convert("RGB"))
+                self.labels.append(item["label"])
+            print("  Done preloading.")
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        item = self.dataset[idx]
-        image = item["image"].convert("RGB")
-        label = item["label"]
+        if self.preloaded_images is not None:
+            image = self.preloaded_images[idx]
+            label = self.labels[idx]
+        else:
+            item = self.dataset[idx]
+            image = item["image"].convert("RGB")
+            label = item["label"]
         if self.transform:
             image = self.transform(image)
         return image, label
@@ -73,6 +90,7 @@ def build_dataset(
     crop_scale=(0.3, 1.0),
     horizontal_flip=False,
     normalize=True,
+    preload=True,
 ):
     dataset_name = dataset_name.upper()
 
@@ -125,7 +143,7 @@ def build_dataset(
             dataset = datasets.ImageFolder(root, transform=transform)
         else:
             split = "train" if is_train else "validation"
-            dataset = HFImageNet(split=split, transform=transform)
+            dataset = HFImageNet(split=split, transform=transform, preload=preload)
         num_classes = 1000
     elif dataset_name == "CELEBA":
         split = "train" if is_train else "valid"
