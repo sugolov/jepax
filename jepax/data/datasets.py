@@ -25,6 +25,7 @@ def build_dataset(
     batch_size=32,
     is_train=True,
     num_workers=4,
+    shuffle=False
 ):
     dataset_name = dataset_name.upper()
     
@@ -37,14 +38,14 @@ def build_dataset(
     
     if is_train:
         transform = transforms.Compose([
-            transforms.RandomResizedCrop(image_size),
-            transforms.RandomHorizontalFlip(),
+            #transforms.RandomResizedCrop(image_size),
+            #transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
         ])
     else:
         transform = transforms.Compose([
-            transforms.Resize(int(image_size * 1.14)),
-            transforms.CenterCrop(image_size),
+            #transforms.Resize(int(image_size * 1.14)),
+            #transforms.CenterCrop(image_size),
             transforms.ToTensor(),
         ])
     
@@ -62,7 +63,7 @@ def build_dataset(
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=is_train,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=is_train,

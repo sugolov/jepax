@@ -12,6 +12,7 @@ from jaxtyping import Float, Array, PRNGKeyArray
 from jepax.model.transformer import Transformer
 
 class PatchEmbedding(eqx.Module):
+    # TODO: make convolutional
     linear: eqx.nn.Embedding
     patch_size: int
 
@@ -44,6 +45,8 @@ class PatchEmbedding(eqx.Module):
         return x
 
 class ViTclassifier(eqx.Module):
+    #TODO: add stochastic depth
+    
     embed: PatchEmbedding
     transformer: Transformer
     clf: Linear

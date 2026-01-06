@@ -45,18 +45,27 @@ class IJEPAMasker:
         self.pred_aspect = self._create_interval(pred_aspect)
 
     
-    def get_idx_pred_mask(self):
-        return self._get_idx_mask(self.pred_aspect[-1], self.pred_scale[-1])
+    #def get_idx_pred_mask(self):
+    #    return self._get_idx_mask(self.pred_aspect[-1], self.pred_scale[-1])
     
-    def get_idx_ctx_mask(self):
-        return self._get_idx_mask(self.ctx_aspect[-1], self.ctx_scale[-1])
+    #def get_idx_ctx_mask(self):
+    #    return self._get_idx_mask(self.ctx_aspect[-1], self.ctx_scale[-1])
 
     def _get_idx_mask(self, scale, aspect):
         # (i, j) indices for top left corner
-        i_max = jnp.ceil((1 - scale) * self.w // 2) 
-        j_max = jnp.ceil((1 - scale / aspect) * self.h // 2) 
-        pw_mask = jnp.array(self.w * scale // self.ps, int)
-        ph_mask = jnp.array(self.w * scale * aspect // self.ps, int)
+        print(scale)
+        #pw_mask, ph_mask = int(self.w // self.ps), int(self.h // self.ps)
+        pw_mask = jnp.floor(self.w_patch * scale / aspect)
+        ph_mask = jnp.floor(self.h_patch * scale)
+        i_max = (self.w_patch - pw_mask) * self.ps
+        j_max = (self.h_patch - ph_mask) * self.ps
+
+        #i_max = jnp.ceil(((1 - scale) * self.w) // self.ps) 
+        #j_max = jnp.ceil(((1 - scale) * self.h) // self.ps) 
+        #pw_mask = jnp.array(self.w * scale / aspect // self.ps, int)
+        #ph_mask = jnp.array(self.h * scale // self.ps, int)
+        #pw_mask = (self.w // self.ps) - i_max
+        #ph_mask = (self.h // self.ps) - j_max
         return i_max, j_max, pw_mask, ph_mask
     
     def _create_interval(self, x):
@@ -73,17 +82,19 @@ class IJEPAMasker:
         pred_aspect = self._sample(k4, self.pred_aspect)
         return ctx_scale, ctx_aspect, pred_scale, pred_aspect
     
-    def _sample_mask(self, key, i_max, j_max, pw_mask, ph_mask):
+    def _sample_mask(self, key, flatten, i_max, j_max, pw_mask, ph_mask):
         k1, k2 = jax.random.split(key, 2)
         i = jax.random.randint(k1, (), minval=0, maxval=i_max)
         j = jax.random.randint(k2, (), minval=0, maxval=j_max)
 
         ii, jj = jnp.meshgrid(jnp.arange(self.h_patch), jnp.arange(self.w_patch), indexing='ij')
-        mask = (ii >= i) & (ii < i + ph_mask) & (jj >= j) & (jj < j + pw_mask)
+        mask = (ii >= i) & (ii < i + ph_mask) & (jj >= j) & (jj < j + pw_mask)\
+        
+        mask = mask.flatten() if flatten else mask
 
         return mask
         
-    def __call__(self, key, M):
+    def __call__(self, key, M, flatten=False):
         """
 
         Args:
@@ -92,6 +103,7 @@ class IJEPAMasker:
 
         Returns:
             Masks of shape (self.h_patch, self.w_patch), (M, self.h_patch, self.w_patch)
+            - masked are 0 / False
         """
         keys = jax.random.split(key, M+2)
         k1, k2, pred_keys = keys[0], keys[1], keys[2:]  # pred_keys is already (M, 2)
@@ -102,9 +114,10 @@ class IJEPAMasker:
             pred_scale
         )
 
-        ctx_mask = self._sample_mask(k2, *self._get_idx_mask(ctx_scale, ctx_aspect))
-        pred_mask = jax.vmap(self._sample_mask, in_axes=(0, None, None, None, None))(
-            pred_keys, *self._get_idx_mask(pred_scale, pred_aspect)
+        ctx_mask = self._sample_mask(k2, flatten, *self._get_idx_mask(ctx_scale, ctx_aspect))
+
+        pred_mask = jax.vmap(self._sample_mask, in_axes=(0, None, None, None, None, None))(
+            pred_keys, flatten, *self._get_idx_mask(pred_scale, pred_aspect)
         )
 
         return ctx_mask, pred_mask
