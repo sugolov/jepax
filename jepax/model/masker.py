@@ -20,11 +20,12 @@ def unpatchify(x, patch_size, n_patch):
         pw=patch_size,
     )
 
-def set_mask(x, mask, vec): 
-    return x * mask + (1 - mask) * vec
+def set_mask(x, mask, mask_vec): 
+    return x * mask + (1 - mask) * mask_vec
 
-def set_token_mask(tokens, mask, vec): 
-    return jax.vmap(set_mask, in_axes=(0, 0, None))(tokens, mask, vec)
+def set_token_mask(tokens, mask, mask_vec): 
+    #return jax.vmap(set_mask, in_axes=(0, 0, None))(tokens, mask, vec)
+    return jnp.where(mask[..., None], tokens, mask_vec)
 
 class IJEPAMasker:
     def __init__(self, height, width, patch_size,

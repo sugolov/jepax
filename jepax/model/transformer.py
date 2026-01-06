@@ -166,9 +166,9 @@ class Transformer(eqx.Module):
         ]
         self.pe = PositionalEncoding(dim=dim, seq_len=seq_len)
     
-    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, train: bool = True):
+    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, use_pe: bool = False, train: bool = True):
         # x: (S, D)
-        x = self.pe(x)
+        x = self.pe(x) if use_pe else x
         
         if key is not None:
             keys = jax.random.split(key, len(self.blocks))
