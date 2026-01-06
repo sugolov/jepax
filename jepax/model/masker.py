@@ -24,7 +24,6 @@ def set_mask(x, mask, mask_vec):
     return x * mask + (1 - mask) * mask_vec
 
 def set_token_mask(tokens, mask, mask_vec): 
-    #return jax.vmap(set_mask, in_axes=(0, 0, None))(tokens, mask, vec)
     return jnp.where(mask[..., None], tokens, mask_vec)
 
 class IJEPAMasker:
@@ -44,28 +43,15 @@ class IJEPAMasker:
         self.pred_scale = self._create_interval(pred_scale)
         self.pred_aspect = self._create_interval(pred_aspect)
 
-    
-    #def get_idx_pred_mask(self):
-    #    return self._get_idx_mask(self.pred_aspect[-1], self.pred_scale[-1])
-    
-    #def get_idx_ctx_mask(self):
-    #    return self._get_idx_mask(self.ctx_aspect[-1], self.ctx_scale[-1])
 
     def _get_idx_mask(self, scale, aspect):
-        # (i, j) indices for top left corner
-        print(scale)
-        #pw_mask, ph_mask = int(self.w // self.ps), int(self.h // self.ps)
-        pw_mask = jnp.floor(self.w_patch * scale / aspect)
-        ph_mask = jnp.floor(self.h_patch * scale)
-        i_max = (self.w_patch - pw_mask) * self.ps
-        j_max = (self.h_patch - ph_mask) * self.ps
+        
+        w_mask = jnp.floor(self.w * scale / jnp.max(jnp.array([aspect, 1.0])))
+        h_mask = jnp.floor(self.h * scale / jnp.min(jnp.array([aspect, 1.0])))
+        
+        i_max, j_max = self.w - w_mask, self.h - h_mask
+        pw_mask, ph_mask = w_mask // self.ps, h_mask // self.ps
 
-        #i_max = jnp.ceil(((1 - scale) * self.w) // self.ps) 
-        #j_max = jnp.ceil(((1 - scale) * self.h) // self.ps) 
-        #pw_mask = jnp.array(self.w * scale / aspect // self.ps, int)
-        #ph_mask = jnp.array(self.h * scale // self.ps, int)
-        #pw_mask = (self.w // self.ps) - i_max
-        #ph_mask = (self.h // self.ps) - j_max
         return i_max, j_max, pw_mask, ph_mask
     
     def _create_interval(self, x):
@@ -103,7 +89,6 @@ class IJEPAMasker:
 
         Returns:
             Masks of shape (self.h_patch, self.w_patch), (M, self.h_patch, self.w_patch)
-            - masked are 0 / False
         """
         keys = jax.random.split(key, M+2)
         k1, k2, pred_keys = keys[0], keys[1], keys[2:]  # pred_keys is already (M, 2)
