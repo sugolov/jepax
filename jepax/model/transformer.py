@@ -5,6 +5,58 @@ import equinox as eqx
 from typing import Optional
 from jaxtyping import Array, PRNGKeyArray
 
+class PositionalEncoding(eqx.Module):
+    """Sinusoidal positional encoding"""
+    pe: Array = eqx.field(static=True)
+    dim: int  = eqx.field(static=True)
+    
+    def __init__(self, dim: int, seq_len: int = 5000):
+        self.dim = dim
+        pe = np.zeros((seq_len, dim))
+        position = np.arange(0, seq_len, dtype=np.float32)[:, None]
+        div_term = np.exp(np.arange(0, dim, 2) * (-np.log(10000.0) / dim))
+        pe[:, 0::2] = np.sin(position * div_term)
+        pe[:, 1::2] = np.cos(position * div_term)
+        self.pe = jnp.array(pe)
+
+    def pe_from_idx(self, idx):
+        return self.pe[idx]
+    
+    def __call__(self, x):
+        # x: (S, D)
+        seq_len = x.shape[0]
+        return x + self.pe[:seq_len]
+    
+
+    
+class PositionalEncoding2D(PositionalEncoding):
+    grid: Array = eqx.field(static=True)
+    dim: int = eqx.field(static=True)
+    
+    def __init__(self, grid_size: int, dim: int, seq_len: int = 5000):
+        super().__init__(self.dim // 2, seq_len=seq_len)
+
+        self.dim = dim
+        self.grid = self._get_pe_grid(grid_size)
+        
+    def _get_pe_grid(self, grid_size):
+        grid_h = jnp.arange(grid_size, dtype=float)
+        grid_w = jnp.arange(grid_size, dtype=float)
+        grid = jnp.meshgrid(grid_w, grid_h)
+        grid = jnp.stack(grid, axis=0).astype(int)
+        return grid
+    
+    def __call__(self, x):
+        """
+        Assume x is (grid_size * grid_size, D) tokens
+        """
+        assert x.shape[0] == self.grid.shape[1]**2
+
+        encx = self.pe_from_idx(self.grid[0].flatten())
+        ency = self.pe_from_idx(self.grid[1].flatten())
+        enc = jnp.concatenate([encx, ency], axis=-1) # concatenate halved dims
+
+        return x + enc
 
 class FeedForward(eqx.Module):
     """A 2 layer feedforward network"""
@@ -27,24 +79,6 @@ class FeedForward(eqx.Module):
         return x
 
 
-class PositionalEncoding(eqx.Module):
-    """Sinusoidal positional encoding"""
-    pe: Array = eqx.field(static=True)
-    
-    def __init__(self, dim: int, seq_len: int = 5000):
-        pe = np.zeros((seq_len, dim))
-        position = np.arange(0, seq_len, dtype=np.float32)[:, None]
-        div_term = np.exp(np.arange(0, dim, 2) * (-np.log(10000.0) / dim))
-        pe[:, 0::2] = np.sin(position * div_term)
-        pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = jnp.array(pe)
-    
-    def __call__(self, x):
-        # x: (S, D)
-        seq_len = x.shape[0]
-        return x + self.pe[:seq_len]
-
-
 class Attention(eqx.Module):
     """Multihead attention layer"""
     qkv_proj: eqx.nn.Linear
@@ -53,7 +87,8 @@ class Attention(eqx.Module):
     dim: int
     causal: bool
     
-    def __init__(self, dim: int, num_head: int, causal: bool = True, *, key: PRNGKeyArray):
+    def __init__(self, dim: int, num_head: int, causal: bool = True, *, 
+                 key: PRNGKeyArray):
         k1, k2 = jax.random.split(key)
         self.dim = dim
         self.num_head = num_head
@@ -86,8 +121,8 @@ class Attention(eqx.Module):
         logits = q @ k.transpose(0, 2, 1) / jnp.sqrt(d)   # (H, S, S)
         
         if mask is not None:
-            logits = jnp.where(mask == 0, -9e15, logits)
-        
+            logits = jnp.where(mask == 0, -9e15, logits) 
+            
         attn = jax.nn.softmax(logits, axis=-1)            # (H, S, S)
         vals = attn @ v                                   # (H, S, D/H)
         
@@ -118,7 +153,8 @@ class TransformerBlock(eqx.Module):
         self.ln2 = eqx.nn.LayerNorm(dim)
         self.dropout = eqx.nn.Dropout(p_drop)
     
-    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, train: bool = True):
+    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, 
+                 train: bool = True):
         # x: (S, D)
         if key is not None:
             k1, k2 = jax.random.split(key)
@@ -149,6 +185,8 @@ class Transformer(eqx.Module):
         mlp_ratio: float = 3.0,
         p_drop: float = 0.1,
         seq_len: int = 2048,
+        pe_type: str = "1d",
+        grid_size: Optional[int] = None,
         *,
         key: PRNGKeyArray
     ):
@@ -164,9 +202,31 @@ class Transformer(eqx.Module):
             )
             for k in keys
         ]
-        self.pe = PositionalEncoding(dim=dim, seq_len=seq_len)
-    
-    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, use_pe: bool = False, train: bool = True):
+        if pe_type == "1d":
+            self.pe = PositionalEncoding(dim=dim, seq_len=seq_len)
+        elif pe_type == "2d":
+            assert grid_size is not None, \
+                "Please specify static grid size for 2D encoding"
+            self.pe = PositionalEncoding2D(
+                grid_size=grid_size, 
+                dim=dim, 
+                seq_len=seq_len
+            )
+
+    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, 
+                 use_pe: bool = False, train: bool = True):
+        """
+        TODO: stochastic depth
+
+        Args:
+            x (_type_): _description_
+            key (Optional[PRNGKeyArray], optional): _description_. Defaults to None.
+            use_pe (bool, optional): _description_. Defaults to False.
+            train (bool, optional): _description_. Defaults to True.
+
+        Returns:
+            _type_: _description_
+        """
         # x: (S, D)
         x = self.pe(x) if use_pe else x
         

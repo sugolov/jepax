@@ -8,3 +8,7 @@ source .venv/bin/activate
 python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax pytest torch torchvision wandb numpy matplotlib tqdm aim
 ```
 
+### TODOs
+- 2D grid encoding
+- tokens for predictor
+- loss functions
