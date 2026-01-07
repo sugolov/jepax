@@ -43,13 +43,22 @@ class IJEPAMasker:
         self.pred_scale = self._create_interval(pred_scale)
         self.pred_aspect = self._create_interval(pred_aspect)
 
+        assert jnp.floor(self.w * self.ctx_scale[-1]) > 0
+        assert jnp.floor(self.h * self.ctx_scale[-1] * self.ctx_aspect[-1]) > 0
+
+        assert jnp.floor(self.w * self.pred_scale[-1]) > 0
+        assert jnp.floor(self.h * self.pred_scale[-1] * self.pred_aspect[-1]) > 0
+
 
     def _get_idx_mask(self, scale, aspect):
         
         w_mask = jnp.floor(self.w * scale / jnp.max(jnp.array([aspect, 1.0])))
         h_mask = jnp.floor(self.h * scale / jnp.min(jnp.array([aspect, 1.0])))
+
+        #w_mask = jnp.floor(self.w * scale)
+        #h_mask = jnp.floor(self.h * scale * aspect)
         
-        i_max, j_max = self.w - w_mask, self.h - h_mask
+        i_max, j_max = (self.w - w_mask) // self.ps, (self.h - h_mask) // self.ps
         pw_mask, ph_mask = w_mask // self.ps, h_mask // self.ps
 
         return i_max, j_max, pw_mask, ph_mask

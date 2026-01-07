@@ -34,16 +34,16 @@ class PositionalEncoding2D(PositionalEncoding):
     dim: int = eqx.field(static=True)
     
     def __init__(self, grid_size: int, dim: int, seq_len: int = 5000):
-        super().__init__(self.dim // 2, seq_len=seq_len)
+        super().__init__(dim // 2, seq_len=seq_len)
 
         self.dim = dim
         self.grid = self._get_pe_grid(grid_size)
         
     def _get_pe_grid(self, grid_size):
-        grid_h = jnp.arange(grid_size, dtype=float)
-        grid_w = jnp.arange(grid_size, dtype=float)
-        grid = jnp.meshgrid(grid_w, grid_h)
-        grid = jnp.stack(grid, axis=0).astype(int)
+        grid_h = np.arange(grid_size, dtype=float)
+        grid_w = np.arange(grid_size, dtype=float)
+        grid = np.meshgrid(grid_w, grid_h)
+        grid = np.stack(grid, axis=0).astype(int)
         return grid
     
     def __call__(self, x):
@@ -122,7 +122,7 @@ class Attention(eqx.Module):
         
         if mask is not None:
             logits = jnp.where(mask == 0, -9e15, logits) 
-            
+
         attn = jax.nn.softmax(logits, axis=-1)            # (H, S, S)
         vals = attn @ v                                   # (H, S, D/H)
         
