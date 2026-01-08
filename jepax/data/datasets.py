@@ -15,17 +15,12 @@ except ImportError:
     HF_AVAILABLE = False
 
 
-def numpy_collate(batch):
-    """Collate function to convert batch to numpy arrays in BHWC format"""
-    images, labels = zip(*batch)
-    images = torch.stack(images).numpy()  # (B, C, H, W)
-    images = np.ascontiguousarray(np.transpose(images, (0, 2, 3, 1)))  # (B, H, W, C)
-    # Handle both int labels and tensor labels (CelebA attributes)
-    if isinstance(labels[0], torch.Tensor):
-        labels = torch.stack(labels).numpy()
-    else:
-        labels = np.array(labels)
-    return images, labels
+def _worker_init_fn(_):
+    """Clamp threads per worker to avoid oversubscription stalls."""
+    import os
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
 
 
 # from IJEPA codebase
@@ -168,8 +163,9 @@ def build_dataset(
         num_workers=num_workers,
         pin_memory=False,
         drop_last=is_train,
-        collate_fn=numpy_collate,
         persistent_workers=num_workers > 0,
+        prefetch_factor=4 if num_workers > 0 else None,
+        worker_init_fn=_worker_init_fn if num_workers > 0 else None,
     )
 
     return dataloader, num_classes, n_samples, image_size

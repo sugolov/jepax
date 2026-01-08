@@ -22,6 +22,15 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 """
 
 
+def torch_to_jax_img(batch_torch, sharding=None):
+    batch_np = batch_torch.numpy()
+    if sharding is not None:
+        batch_jax = jax.device_put(batch_np, sharding)
+    else:
+        batch_jax = jnp.array(batch_np)
+    return jnp.transpose(batch_jax, (0, 2, 3, 1))
+
+
 def get_patch_size(dataset: str, img_size: int) -> int:
     # If resized to 224, use ImageNet-style patch size
     if img_size == 224:
@@ -40,7 +49,7 @@ def parse_args():
     )
     p.add_argument("--config", type=str, required=True, help="Path to YAML config file")
     p.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume")
-    # Allow CLI overrides for common params
+    # Allow CLI overrides
     p.add_argument("--epochs", type=int, help="Override train.epochs")
     p.add_argument("--batch_size", type=int, help="Override data.batch_size")
     p.add_argument("--lr", type=float, help="Override train.lr")
@@ -210,10 +219,9 @@ def evaluate_linear_probe(
         reps_list, labels_list = [], []
         n_seen = 0
         for batch_imgs, batch_labels in loader:
-            if use_sharding:
-                batch_imgs = jax.device_put(batch_imgs, data_sharding)
-            else:
-                batch_imgs = jnp.array(batch_imgs)
+            batch_imgs = torch_to_jax_img(
+                batch_imgs, data_sharding if use_sharding else None
+            )
             reps = get_representations(encoder, batch_imgs)
             reps_np = np.array(reps)
             labels_np = np.array(batch_labels)
@@ -523,11 +531,11 @@ def main():
             if cfg.shard:
                 enc_masks = jax.device_put(enc_masks, data_sharding)
                 pred_masks = jax.device_put(pred_masks, data_sharding)
-                batch_imgs = jax.device_put(batch_imgs, data_sharding)
             else:
                 enc_masks = jnp.array(enc_masks)
                 pred_masks = jnp.array(pred_masks)
-                batch_imgs = jnp.array(batch_imgs)
+
+            batch_imgs = torch_to_jax_img(batch_imgs, data_sharding if cfg.shard else None)
             t1 = time.time()
 
             (model, target_encoder), opt_state, loss = train_step(
