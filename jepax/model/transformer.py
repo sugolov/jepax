@@ -17,10 +17,10 @@ class PositionalEncoding(eqx.Module):
         div_term = np.exp(np.arange(0, dim, 2) * (-np.log(10000.0) / dim))
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = jnp.array(pe)
+        self.pe = np.array(pe)
 
     def pe_from_idx(self, idx):
-        return self.pe[idx]
+        return jnp.take(self.pe, idx, axis=0)
     
     def __call__(self, x):
         # x: (S, D)
@@ -46,6 +46,12 @@ class PositionalEncoding2D(PositionalEncoding):
         grid = np.stack(grid, axis=0).astype(int)
         return grid
     
+    def _get_pe_from_grid(self, grid):
+        encx = self.pe_from_idx(grid[0].flatten())
+        ency = self.pe_from_idx(grid[1].flatten())
+        enc = jnp.concatenate([encx, ency], axis=-1) # concatenate halved dims
+        return enc
+
     def __call__(self, x):
         """
         Assume x is (grid_size * grid_size, D) tokens
@@ -96,7 +102,7 @@ class Attention(eqx.Module):
         self.qkv_proj = eqx.nn.Linear(dim, 3 * dim, key=k1)
         self.out_proj = eqx.nn.Linear(dim, dim, key=k2)
     
-    def __call__(self, x):
+    def __call__(self, x, mask: Optional[Array]=None):
         # x: (S, D)
         S, D = x.shape
         
@@ -105,7 +111,17 @@ class Attention(eqx.Module):
         qkv = qkv.transpose(1, 0, 2)                    # (H, S, 3D/H)
         q, k, v = jnp.split(qkv, 3, axis=-1)            # (H, S, D/H)
         
-        mask = jnp.tri(S, S).T if self.causal else None
+
+        mask_causal = jnp.tri(S, S).T if self.causal else None
+
+        # NOTE: double check this
+        if mask is None:
+            # if mask is not passed, then mask is whatever mask_causal takes
+            mask = mask_causal
+        elif self.causal:
+            # but if causal, and mask is passed, then we mask out both
+            mask = (mask | mask_causal)
+
         
         vals, attn = self._attention(q, k, v, mask=mask)  # (H, S, D/H)
         vals = vals.transpose(1, 0, 2)                    # (S, H, D/H)
@@ -116,6 +132,7 @@ class Attention(eqx.Module):
         return out, attn
     
     def _attention(self, q, k, v, mask=None):
+        # here, mask is where false
         """Attention mechanism. q, k, v: (H, S, D/H)"""
         d = q.shape[-1]
         logits = q @ k.transpose(0, 2, 1) / jnp.sqrt(d)   # (H, S, S)
@@ -153,15 +170,15 @@ class TransformerBlock(eqx.Module):
         self.ln2 = eqx.nn.LayerNorm(dim)
         self.dropout = eqx.nn.Dropout(p_drop)
     
-    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, 
-                 train: bool = True):
+    def __call__(self, x, attn_mask: Optional[Array] = None, *, 
+                 key: Optional[PRNGKeyArray] = None, train: bool = True):
         # x: (S, D)
         if key is not None:
             k1, k2 = jax.random.split(key)
         else:
             k1 = k2 = None
         
-        attn_out, _ = self.attn(x)
+        attn_out, _ = self.attn(x, mask=attn_mask)
         x = x + self.dropout(attn_out, key=k1, inference=not train)
         x = jax.vmap(self.ln1)(x)
         
@@ -213,8 +230,8 @@ class Transformer(eqx.Module):
                 seq_len=seq_len
             )
 
-    def __call__(self, x, *, key: Optional[PRNGKeyArray] = None, 
-                 use_pe: bool = False, train: bool = True):
+    def __call__(self, x, attn_mask: Optional[Array] = None, *, 
+                 key: Optional[PRNGKeyArray] = None, use_pe: bool = True, train: bool = True):
         """
         TODO: stochastic depth
 

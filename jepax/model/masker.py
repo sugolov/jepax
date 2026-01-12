@@ -20,6 +20,11 @@ def unpatchify(x, patch_size, n_patch):
         pw=patch_size,
     )
 
+def visualize_mask(x, mask, patch_size, n_patch):
+    x_masked = jax.vmap(lambda x, m: x * m)(patchify(x, patch_size), mask)
+    x_masked_img = unpatchify(x_masked, patch_size, n_patch)
+    return x_masked_img
+
 def set_mask(x, mask, mask_vec): 
     return x * mask + (1 - mask) * mask_vec
 

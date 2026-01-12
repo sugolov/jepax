@@ -9,6 +9,5 @@ python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax py
 ```
 
 ### TODOs
-- 2D grid encoding
 - tokens for predictor
 - loss functions
