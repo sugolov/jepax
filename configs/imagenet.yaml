@@ -11,21 +11,21 @@ data:
   batch_size: 2048
   num_workers: 16
   resize: true  # 224x224
-  preload: true  # pre-decode all images into RAM at startup (requires ~200 GB?)
+  preload: false  # pre-decode all images into RAM at startup (requires ~200 GB?)
 
 model:
   embed_dim: 512
   encoder_depth: 10
   predictor_dim: 256
-  predictor_depth: 6
+  predictor_depth: 12
   num_heads: 8
 
 train:
-  epochs: 1600
+  epochs: 1000
   lr: 1.0e-3
-  start_lr: 1.0e-4
+  start_lr: 2.0e-4
   final_lr: 1.0e-6
-  warmup_frac: 0.01
+  warmup_frac: 0.04
   wd: 0.04
   ema_start: 0.996
   ema_end: 1.0

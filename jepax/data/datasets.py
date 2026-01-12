@@ -1,6 +1,5 @@
 import os
 
-import numpy as np
 
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -18,6 +17,7 @@ except ImportError:
 def _worker_init_fn(_):
     """Clamp threads per worker to avoid oversubscription stalls."""
     import os
+
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     torch.set_num_threads(1)

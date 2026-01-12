@@ -11,6 +11,7 @@ import numpy as np
 import optax
 from tqdm import tqdm
 
+import math
 from jepax.config import load_config, to_dict
 from jepax.data.datasets import build_dataset
 from jepax.model.ijepa import IJEPA, ema_update
@@ -19,6 +20,9 @@ from jepax.masks import MaskCollator
 """
 pip uninstall torch torchvision -y
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+pip install datasets
+hf auth login
 """
 
 
@@ -29,6 +33,36 @@ def torch_to_jax_img(batch_torch, sharding=None):
     else:
         batch_jax = jnp.array(batch_np)
     return jnp.transpose(batch_jax, (0, 2, 3, 1))
+
+
+def fix_init_weight(model):
+    def rescale_block(block, layer_id):
+        scale = math.sqrt(2.0 * (layer_id + 1))
+        # Rescale attention output projection
+        block = eqx.tree_at(
+            lambda b: b.attn.mha.output_proj.weight,
+            block,
+            block.attn.mha.output_proj.weight / scale,
+        )
+        # Rescale MLP fc2
+        block = eqx.tree_at(
+            lambda b: b.ff.linear2.weight,
+            block,
+            block.ff.linear2.weight / scale,
+        )
+        return block
+
+    # Rescale encoder blocks
+    new_blocks = [rescale_block(b, i) for i, b in enumerate(model.encoder.blocks)]
+    model = eqx.tree_at(lambda m: m.encoder.blocks, model, new_blocks)
+
+    # Rescale predictor blocks
+    new_pred_blocks = [
+        rescale_block(b, i) for i, b in enumerate(model.predictor.blocks)
+    ]
+    model = eqx.tree_at(lambda m: m.predictor.blocks, model, new_pred_blocks)
+
+    return model
 
 
 def get_patch_size(dataset: str, img_size: int) -> int:
@@ -399,6 +433,7 @@ def main():
         num_heads=cfg.model.num_heads,
         key=model_key,
     )
+    model = fix_init_weight(model)
     target_encoder = jax.tree.map(lambda x: x, model.encoder)
 
     n_params = sum(x.size for x in jax.tree.leaves(eqx.filter(model, eqx.is_array)))
@@ -535,7 +570,9 @@ def main():
                 enc_masks = jnp.array(enc_masks)
                 pred_masks = jnp.array(pred_masks)
 
-            batch_imgs = torch_to_jax_img(batch_imgs, data_sharding if cfg.shard else None)
+            batch_imgs = torch_to_jax_img(
+                batch_imgs, data_sharding if cfg.shard else None
+            )
             t1 = time.time()
 
             (model, target_encoder), opt_state, loss = train_step(
