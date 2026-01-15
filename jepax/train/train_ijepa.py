@@ -15,7 +15,6 @@ from tqdm import tqdm
 
 from jepax.data import build_dataset
 from jepax.model import get_vit_clf_model
-from jepax.train import save_checkpoint
 
 def load_checkpoint(path, model_name, num_classes, seed):
     import json
@@ -34,6 +33,19 @@ def load_checkpoint(path, model_name, num_classes, seed):
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
 
     return model, opt_state, checkpoint['epoch'], args
+
+def save_checkpoint(model, opt_state, epoch, args, path):
+    checkpoint = {
+        'epoch': epoch,
+        'args': vars(args)
+    }
+    eqx.tree_serialise_leaves(path + "_model.eqx", model)
+    eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
+
+    import json
+    with open(path + "_meta.json", "w") as f:
+        json.dump(checkpoint, f)
+
 
 @eqx.filter_value_and_grad
 def compute_grads(model, x, y, key):
@@ -175,28 +187,59 @@ def train_vit_cifar10(args):
 
 def parse_args():
     p = argparse.ArgumentParser()
+    
+    # data
     p.add_argument("--data_name", type=str, default="cifar10")
-    p.add_argument("--model_name", type=str, default="vit-ti")
-    p.add_argument("--exp_name", type=str, default="vit_cifar10")
-    p.add_argument("--tag", type=str, default=None)
-
-    p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=5e-3)
-
-    p.add_argument("--save_dir", type=str, default=".checkpoints")
     p.add_argument("--data_dir", type=str, default=".data")
+    p.add_argument("--img_size", type=int, default=32)
+    p.add_argument("--num_channels", type=int, default=3)
+    
+    # encoder
+    p.add_argument("--patch_size", type=int, default=4)
+    p.add_argument("--enc_dim", type=int, default=64)
+    p.add_argument("--enc_num_layers", type=int, default=6)
+    p.add_argument("--enc_num_heads", type=int, default=4)
+    p.add_argument("--enc_mlp_ratio", type=float, default=4.0)
+    
+    # predictor
+    p.add_argument("--pred_dim", type=int, default=32)
+    p.add_argument("--pred_num_layers", type=int, default=4)
+    p.add_argument("--pred_num_heads", type=int, default=4)
+    p.add_argument("--pred_mlp_ratio", type=float, default=4.0)
+    
+    # shared model params
+    p.add_argument("--p_drop", type=float, default=0.1)
+    p.add_argument("--seq_len", type=int, default=256)
+    
+    # masking
+    p.add_argument("--num_pred_masks", type=int, default=4)
+    p.add_argument("--num_pad", type=int, default=64)
+    p.add_argument("--mask_scale", type=float, nargs=2, default=[0.15, 0.2])
+    p.add_argument("--ctx_scale", type=float, nargs=2, default=[0.85, 1.0])
+    
+    # ema
+    p.add_argument("--ema_decay", type=float, default=0.996)
+    
+    # training
+    p.add_argument("--exp_name", type=str, default="ijepa")
+    p.add_argument("--tag", type=str, default=None)
+    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--batch_size", type=int, default=64)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--weight_decay", type=float, default=0.05)
+    p.add_argument("--warmup_epochs", type=int, default=10)
+    
+    # logging/checkpointing
+    p.add_argument("--save_dir", type=str, default=".checkpoints")
     p.add_argument("--aim_repo", type=str, default=".aim")
-
     p.add_argument("--save_interval", type=int, default=10)
-    p.add_argument("--eval_interval", type=int, default=10)
     p.add_argument("--print_interval", type=int, default=1)
-
-    p.add_argument("--num_workers", type=int, default=0)
+    
+    p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resume", type=str, default=None)
+    
     return p.parse_args()
-
 
 if __name__ == "__main__":
     args = parse_args()

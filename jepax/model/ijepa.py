@@ -13,6 +13,156 @@ from jepax.model.masker import set_token_mask
 from jepax.model.transformer import Transformer, PositionalEncoding, PositionalEncoding2D
 from jepax.model.vit import PatchEmbedding
 
+# Encoder configs (same as ViT)
+ijepa_encoder_configs = {
+    "vit-ti": {"dim": 192, "num_layers": 12, "num_head": 3, "mlp_ratio": 4.0},
+    "vit-s": {"dim": 384, "num_layers": 12, "num_head": 6, "mlp_ratio": 4.0},
+    "vit-b": {"dim": 768, "num_layers": 12, "num_head": 12, "mlp_ratio": 4.0},
+    "vit-l": {"dim": 1024, "num_layers": 24, "num_head": 16, "mlp_ratio": 4.0},
+    "vit-h": {"dim": 1280, "num_layers": 32, "num_head": 16, "mlp_ratio": 4.0},
+    "test": {"dim": 64, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
+}
+
+# Predictor configs
+ijepa_predictor_configs = {
+    "pred-ti": {"latent_dim": 96, "num_layers": 6, "num_head": 3, "mlp_ratio": 4.0},
+    "pred-s": {"latent_dim": 192, "num_layers": 6, "num_head": 6, "mlp_ratio": 4.0},
+    "pred-b": {"latent_dim": 384, "num_layers": 12, "num_head": 12, "mlp_ratio": 4.0},
+    "pred-l": {"latent_dim": 512, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
+    "pred-h": {"latent_dim": 640, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
+    "test": {"latent_dim": 32, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
+}
+
+# Combined IJEPA configs (encoder_name, predictor_name)
+ijepa_configs = {
+    "ijepa-ti": ("vit-ti", "pred-ti"),
+    "ijepa-s": ("vit-s", "pred-s"),
+    "ijepa-b": ("vit-b", "pred-b"),
+    "ijepa-l": ("vit-l", "pred-l"),
+    "ijepa-h": ("vit-h", "pred-h"),
+    "ijepa-test": ("test", "test"),
+}
+
+
+def get_encoder_config(
+    name: str,
+    num_channels: int = 3,
+    patch_size: int = 16,
+    img_size: int = 224,
+    p_drop: float = 0.0,
+    seq_len: int = 256,
+):
+    if name not in ijepa_encoder_configs:
+        raise ValueError(f"Unknown encoder config: {name}. Choose from {list(ijepa_encoder_configs.keys())}")
+    return {
+        **ijepa_encoder_configs[name],
+        "num_channels": num_channels,
+        "patch_size": patch_size,
+        "img_size": img_size,
+        "p_drop": p_drop,
+        "seq_len": seq_len,
+    }
+
+
+def get_predictor_config(
+    name: str,
+    enc_dim: int,
+    grid_size: int,
+    p_drop: float = 0.0,
+    seq_len: int = 256,
+):
+    if name not in ijepa_predictor_configs:
+        raise ValueError(f"Unknown predictor config: {name}. Choose from {list(ijepa_predictor_configs.keys())}")
+    return {
+        **ijepa_predictor_configs[name],
+        "dim": enc_dim,  # predictor input dim must match encoder output
+        "grid_size": grid_size,
+        "p_drop": p_drop,
+        "seq_len": seq_len,
+    }
+
+
+def get_ijepa_config(name: str):
+    if name not in ijepa_configs:
+        raise ValueError(f"Unknown IJEPA config: {name}. Choose from {list(ijepa_configs.keys())}")
+    return ijepa_configs[name]
+
+
+def get_ijepa_model(
+    name: str,
+    *,
+    key: PRNGKeyArray,
+    num_channels: int = 3,
+    patch_size: int = 16,
+    img_size: int = 224,
+    p_drop: float = 0.0,
+    seq_len: int = 256,
+) -> IJEPA:
+    enc_name, pred_name = get_ijepa_config(name)
+    
+    k1, k2 = jax.random.split(key)
+    grid_size = img_size // patch_size
+    
+    enc_config = get_encoder_config(
+        enc_name,
+        num_channels=num_channels,
+        patch_size=patch_size,
+        img_size=img_size,
+        p_drop=p_drop,
+        seq_len=seq_len,
+    )
+    
+    pred_config = get_predictor_config(
+        pred_name,
+        enc_dim=enc_config["dim"],
+        grid_size=grid_size,
+        p_drop=p_drop,
+        seq_len=seq_len,
+    )
+    
+    encoder = IJEPAEncoder(**enc_config, key=k1)
+    predictor = IJEPAPredictor(**pred_config, key=k2)
+    
+    return IJEPA(encoder=encoder, predictor=predictor)
+
+
+# Convenience for custom encoder/predictor combos
+def get_ijepa_model_custom(
+    enc_name: str,
+    pred_name: str,
+    *,
+    key: PRNGKeyArray,
+    num_channels: int = 3,
+    patch_size: int = 16,
+    img_size: int = 224,
+    p_drop: float = 0.0,
+    seq_len: int = 256,
+) -> IJEPA:
+    k1, k2 = jax.random.split(key)
+    grid_size = img_size // patch_size
+    
+    enc_config = get_encoder_config(
+        enc_name,
+        num_channels=num_channels,
+        patch_size=patch_size,
+        img_size=img_size,
+        p_drop=p_drop,
+        seq_len=seq_len,
+    )
+    
+    pred_config = get_predictor_config(
+        pred_name,
+        enc_dim=enc_config["dim"],
+        grid_size=grid_size,
+        p_drop=p_drop,
+        seq_len=seq_len,
+    )
+    
+    encoder = IJEPAEncoder(**enc_config, key=k1)
+    predictor = IJEPAPredictor(**pred_config, key=k2)
+    
+    return IJEPA(encoder=encoder, predictor=predictor)
+
 class IJEPAEncoder(eqx.Module):
     embed: PatchEmbedding
     transformer: Transformer

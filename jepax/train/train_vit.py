@@ -35,6 +35,20 @@ def load_checkpoint(path, model_name, num_classes, seed):
 
     return model, opt_state, checkpoint['epoch'], args
 
+
+def save_checkpoint(model, opt_state, epoch, args, path):
+    checkpoint = {
+        'epoch': epoch,
+        'args': vars(args)
+    }
+    eqx.tree_serialise_leaves(path + "_model.eqx", model)
+    eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
+
+    import json
+    with open(path + "_meta.json", "w") as f:
+        json.dump(checkpoint, f)
+
+
 @eqx.filter_value_and_grad
 def compute_grads(model, x, y, key):
     logits = jax.vmap(model, in_axes=(0, 0, None))(x, key, True)
