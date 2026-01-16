@@ -97,7 +97,7 @@ def get_ijepa_model(
     img_size: int = 224,
     p_drop: float = 0.0,
     seq_len: int = 256,
-) -> IJEPA:
+):
     enc_name, pred_name = get_ijepa_config(name)
     
     k1, k2 = jax.random.split(key)
@@ -137,7 +137,7 @@ def get_ijepa_model_custom(
     img_size: int = 224,
     p_drop: float = 0.0,
     seq_len: int = 256,
-) -> IJEPA:
+):
     k1, k2 = jax.random.split(key)
     grid_size = img_size // patch_size
     
@@ -319,7 +319,8 @@ class IJEPA(eqx.Module):
         mask_enc = ~(~mask_ctx | jnp.any(mask_pred, axis=0))
 
         z = self.encoder(k1, x, mask_enc, train=train)
-        z_full = self.encoder(k2, x, train=train)
+        z_full = jax.lax.stop_gradient(self.encoder(k2, x, train=train)) # stop grad
+        
         z_pred, mask_idx = self.predictor(k3, z, num_pad=num_pad, mask_pred=mask_pred)
 
         return z, z_full, z_pred, mask_idx

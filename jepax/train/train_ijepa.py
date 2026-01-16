@@ -35,61 +35,6 @@ def update_ema(ema_encoder, encoder, decay: float):
     )
     return eqx.combine(new_ema_params, ema_static)
 
-
-# -----------------------------------------------------------------------------
-# Masking utilities
-# -----------------------------------------------------------------------------
-
-def sample_block_mask(key, grid_size: int, scale: tuple[float, float], aspect_ratio: tuple[float, float] = (0.75, 1.5)):
-    """Sample a single block mask.
-    
-    Returns:
-        mask: bool array of shape (grid_size, grid_size), True = masked
-    """
-    # TODO: implement block masking
-    # 1. Sample target block size from scale range
-    # 2. Sample aspect ratio
-    # 3. Sample random position
-    # 4. Create boolean mask
-    raise NotImplementedError
-
-
-def sample_context_mask(key, grid_size: int, scale: tuple[float, float]):
-    """Sample context mask (what the encoder sees).
-    
-    Returns:
-        mask: bool array of shape (grid_size, grid_size), True = visible
-    """
-    # TODO: implement context masking
-    raise NotImplementedError
-
-
-def sample_pred_masks(key, grid_size: int, num_masks: int, scale: tuple[float, float]):
-    """Sample multiple prediction target masks.
-    
-    Returns:
-        masks: bool array of shape (num_masks, grid_size, grid_size), True = predict
-    """
-    # TODO: sample num_masks non-overlapping target blocks
-    raise NotImplementedError
-
-
-def get_masks(key, grid_size: int, num_pred_masks: int, pred_scale: tuple, ctx_scale: tuple):
-    """Generate context and prediction masks for a single sample.
-    
-    Returns:
-        mask_ctx: (grid_size, grid_size) - True = visible to encoder
-        mask_pred: (num_pred_masks, grid_size, grid_size) - True = prediction target
-    """
-    k1, k2 = jax.random.split(key)
-    
-    # TODO: 
-    # 1. Sample prediction target masks
-    # 2. Sample context mask (should not overlap with prediction targets)
-    # 3. Return both
-    raise NotImplementedError
-
-
 # -----------------------------------------------------------------------------
 # Loss and training step
 # -----------------------------------------------------------------------------
