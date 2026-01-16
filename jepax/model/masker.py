@@ -109,10 +109,6 @@ class IJEPAMasker:
 
         ctx_scale, ctx_aspect, pred_scale, pred_aspect = self._sample_aspects(k1)
 
-        print(
-            pred_scale
-        )
-
         ctx_mask = self._sample_mask(k2, flatten, *self._get_idx_mask(ctx_scale, ctx_aspect))
 
         pred_mask = jax.vmap(self._sample_mask, in_axes=(0, None, None, None, None, None))(
