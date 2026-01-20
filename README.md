@@ -4,6 +4,16 @@
 jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/patrick-kidger/equinox) implementation of Joint-Embedding Predictive Architecture (JEPA) models and related self-supervised learning methods. 
 
 
+# TODO
+- fix bool masks to indices to take less memory with masker
+- gpu profile
+- compute mfu
+- smarter cached masking
+- compute whether training is reasonable for wandb run
+- fix lr log
+- make sure eval is correctly sharded and is not OOMing
+- think about sharding predictor to a different gpu
+
 ## Installation
 
 ```bash
@@ -27,6 +37,8 @@ python jepax/data/download_imagenet.py --data_dir ~/your/data/dir
 ```
 
 Requires Python >= 3.10.
+
+
 
 ## Future Development
 
