@@ -156,18 +156,25 @@ def update_ema(ema_encoder, encoder, decay: float):
 
 
 @eqx.filter_value_and_grad
-def compute_grads(model, x_b, mask_ctx_b, mask_pred_b, num_pad, key):
+def compute_grads(model, ema_encoder, x_b, mask_ctx_b, mask_pred_b, num_pad, key):
     keys = jax.random.split(key, x_b.shape[0])
 
-    # 
-    _, z_full, z_pred, mask_idx = jax.vmap(
+    # ijepa forward
+    _, z_pred, mask_idx = jax.vmap(
         lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=num_pad, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
+    # ema_representations
+    keys = jax.random.split(keys[0], x_b.shape[0])
+    z_ema = jax.vmap(
+        lambda k, x: ema_encoder(k, x, train=False)
+    )(keys, x_b)
+    z_ema = jax.lax.stop_gradient(z_ema) # stop grad flow
 
+    # padded loss calculation
     valid = mask_idx >= 0  # (B, num_pad)
     safe_idx = jnp.where(valid, mask_idx, 0)  # avoid OOB indexing
-    target = jax.vmap(lambda z, idx: z[idx])(z_full, safe_idx)  # (B, num_pad, D)
+    target = jax.vmap(lambda z, idx: z[idx])(z_ema, safe_idx)  # (B, num_pad, D)
 
     mse = jnp.sum((target - z_pred) ** 2, axis=-1)  # (B, num_pad)
     loss = jnp.sum(mse * valid) / jnp.sum(valid)  # only count valid positions
@@ -323,19 +330,18 @@ def train_ijepa(
         )
     
     # step model
-    @eqx.filter_jit(donate="all")
+    @eqx.filter_jit(donate="all-except-first")
     def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, num_pad, key):
 
-        loss, grads = compute_grads(model, x, mask_ctx, mask_pred, num_pad, key)
+        loss, grads = compute_grads(model, ema_encoder, x, mask_ctx, mask_pred, num_pad, key)
         
         updates, opt_state = optimizer.update(grads, opt_state, model)
+
         model = eqx.apply_updates(model, updates)
-        ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
-        model = eqx.tree_at(lambda m: m.encoder, model, ema_encoder)
         
         return eqx.filter_shard((model, ema_encoder, opt_state, loss), model_sharding)
 
-    # Training loop
+    # training loop
     step = 0
     for epoch in range(start_epoch, epochs):
         epoch_losses = []
@@ -359,7 +365,10 @@ def train_ijepa(
                 x, mask_ctx, mask_pred,
                 num_pad, step_key
             )
-            assert not jnp.isnan(loss), f"NaN loss at step {step}"
+            ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
+
+            assert not jnp.isnan(loss), f"Epoch {epoch+1}/{epochs}:NaN \
+                loss at step {step}"
             
             epoch_losses.append(loss)
             step += 1

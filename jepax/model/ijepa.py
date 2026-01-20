@@ -319,11 +319,9 @@ class IJEPA(eqx.Module):
         mask_enc = ~(~mask_ctx | jnp.any(mask_pred, axis=0))
 
         z = self.encoder(k1, x, mask_enc, train=train)
-        z_full = jax.lax.stop_gradient(self.encoder(k2, x, train=train)) # stop grad
+        # z_full = jax.lax.stop_gradient(self.encoder(k2, x, train=train)) # stop grad
         
         z_pred, mask_idx = self.predictor(k3, z, num_pad=num_pad, mask_pred=mask_pred)
 
-        return z, z_full, z_pred, mask_idx
-
-
-
+        # return z, z_full, z_pred, mask_idx
+        return z, z_pred, mask_idx

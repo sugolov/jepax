@@ -7,7 +7,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 class PositionalEncoding(eqx.Module):
     """Sinusoidal positional encoding"""
-    pe: Array = eqx.field(static=True)
+    pe: Array
     dim: int  = eqx.field(static=True)
     
     def __init__(self, dim: int, seq_len: int = 5000):
@@ -17,10 +17,10 @@ class PositionalEncoding(eqx.Module):
         div_term = np.exp(np.arange(0, dim, 2) * (-np.log(10000.0) / dim))
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = np.array(pe)
+        self.pe = jax.lax.stop_gradient(np.array(pe))
 
     def pe_from_idx(self, idx):
-        return jnp.take(self.pe, idx, axis=0)
+        return jax.lax.stop_gradient(jnp.take(self.pe, idx, axis=0))
     
     def __call__(self, x):
         # x: (S, D)
@@ -30,7 +30,7 @@ class PositionalEncoding(eqx.Module):
 
     
 class PositionalEncoding2D(PositionalEncoding):
-    grid: Array = eqx.field(static=True)
+    grid: Array
     dim: int = eqx.field(static=True)
     
     def __init__(self, grid_size: int, dim: int, seq_len: int = 5000):
@@ -44,13 +44,13 @@ class PositionalEncoding2D(PositionalEncoding):
         grid_w = np.arange(grid_size, dtype=float)
         grid = np.meshgrid(grid_w, grid_h)
         grid = np.stack(grid, axis=0).astype(int)
-        return grid
+        return jax.lax.stop_gradient(grid)
     
     def _get_pe_from_grid(self, grid):
         encx = self.pe_from_idx(grid[0].flatten())
         ency = self.pe_from_idx(grid[1].flatten())
         enc = jnp.concatenate([encx, ency], axis=-1) # concatenate halved dims
-        return enc
+        return jax.lax.stop_gradient(enc)
 
     def __call__(self, x):
         """
@@ -123,13 +123,13 @@ class Attention(eqx.Module):
             mask = (mask | mask_causal)
 
         
-        vals, attn = self._attention(q, k, v, mask=mask)  # (H, S, D/H)
+        vals = self._attention(q, k, v, mask=mask)  # (H, S, D/H)
         vals = vals.transpose(1, 0, 2)                    # (S, H, D/H)
         vals = vals.reshape(S, -1)                        # (S, D)
         
         out = jax.vmap(self.out_proj)(vals)               # (S, D)
         
-        return out, attn
+        return out
     
     def _attention(self, q, k, v, mask=None):
         # here, mask is where false
@@ -143,7 +143,7 @@ class Attention(eqx.Module):
         attn = jax.nn.softmax(logits, axis=-1)            # (H, S, S)
         vals = attn @ v                                   # (H, S, D/H)
         
-        return vals, attn
+        return vals
 
 
 class TransformerBlock(eqx.Module):
@@ -178,7 +178,7 @@ class TransformerBlock(eqx.Module):
         else:
             k1 = k2 = None
         
-        attn_out, _ = self.attn(x, mask=attn_mask)
+        attn_out = self.attn(x, mask=attn_mask)
         x = x + self.dropout(attn_out, key=k1, inference=not train)
         x = jax.vmap(self.ln1)(x)
         
@@ -253,6 +253,6 @@ class Transformer(eqx.Module):
             keys = [None] * len(self.blocks)
         
         for block, k in zip(self.blocks, keys):
-            x = block(x, key=k, train=train)
+            x = block(x, key=k, train=train, attn_mask=attn_mask)
         
         return x
