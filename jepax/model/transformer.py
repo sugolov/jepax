@@ -112,7 +112,7 @@ class Attention(eqx.Module):
         q, k, v = jnp.split(qkv, 3, axis=-1)            # (H, S, D/H)
         
 
-        mask_causal = jnp.tri(S, S).T if self.causal else None
+        mask_causal = jnp.tri(S, S, dtype=bool).T if self.causal else None
 
         # NOTE: double check this
         if mask is None:
