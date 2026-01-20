@@ -5,6 +5,7 @@ from datetime import datetime
 
 import jax
 from jax import numpy as jnp
+import jax.sharding as jshard
 import equinox as eqx
 import optax
 import aim
@@ -14,15 +15,17 @@ from jepax.data import build_dataset
 from jepax.model import get_ijepa_model, IJEPAMasker, IJEPA 
 from jepax.train.eval_ijepa import evaluate_linear_probe
 
+import wandb
+
 def parse_args():
     p = argparse.ArgumentParser()
     
     # data
     p.add_argument("--data_name", type=str, default="cifar10")
-    p.add_argument("--data_dir", type=str, default="~/data")
+    p.add_argument("--data_dir", type=str, default=".data")
     p.add_argument("--num_channels", type=int, default=3)
     
-    # model (config-based)
+    # model
     p.add_argument("--model_name", type=str, default="ijepa-test",
                    choices=["ijepa-ti", "ijepa-s", "ijepa-b", "ijepa-l", "ijepa-h", "ijepa-test"])
     p.add_argument("--patch_size", type=int, default=4)
@@ -30,23 +33,20 @@ def parse_args():
     p.add_argument("--seq_len", type=int, default=256)
     
     # masking
-    p.add_argument("--num_pred_masks", type=int, default=4,
-                   help="Number of prediction target blocks")
-    p.add_argument("--num_pad", type=int, default=64,
-                   help="Max tokens per prediction mask (for static shapes)")
-    p.add_argument("--pred_scale", type=float, nargs=2, default=[0.15, 0.2],
-                   help="Scale range for prediction target blocks")
-    p.add_argument("--ctx_scale", type=float, nargs=2, default=[0.85, 1.0],
-                   help="Scale range for context (visible) blocks")
+    p.add_argument("--num_pred_masks", type=int, default=4)
+    p.add_argument("--num_pad", type=int, default=64)
+    p.add_argument("--pred_scale", type=float, nargs=2, default=[0.15, 0.2])
+    p.add_argument("--pred_aspect", type=float, nargs=2, default=[0.75, 1.5])
+    p.add_argument("--ctx_scale", type=float, nargs=2, default=[0.85, 1.0])
+    p.add_argument("--ctx_aspect", type=float, default=1.0)
     
     # ema
-    p.add_argument("--ema_decay", type=float, default=0.996,
-                   help="EMA decay for target encoder")
+    p.add_argument("--ema_decay", type=float, default=0.996)
     
     # training
     p.add_argument("--exp_name", type=str, default="ijepa")
     p.add_argument("--tag", type=str, default=None)
-    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--epochs", type=int, default=300)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.05)
@@ -60,14 +60,19 @@ def parse_args():
     
     # logging/checkpointing
     p.add_argument("--save_dir", type=str, default=".checkpoints")
+    p.add_argument("--use_aim", action="store_true")
     p.add_argument("--aim_repo", type=str, default=".aim")
+    p.add_argument("--use_wandb", action="store_true")
+    p.add_argument("--wandb_project", type=str, default="ijepa")
     p.add_argument("--save_interval", type=int, default=10)
     p.add_argument("--print_interval", type=int, default=1)
     
+    # misc
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resume", type=str, default=None)
-    
+    p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
+
     return p.parse_args()
 
 def save_checkpoint(model, opt_state, epoch, hparams, path):
@@ -129,9 +134,14 @@ def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
     )
     return top1, top5
 
-def get_num_pad(mask_pred):
-    counts = jnp.sum(mask_pred, axis=-1)  # (B, M)
-    return int(jnp.max(counts))
+def get_num_pad(mask_pred, buckets=None):
+    if buckets is None:
+        return mask_pred.shape[-1] # max bucket
+    else:
+        counts = int(jnp.max(jnp.sum(mask_pred, axis=-1)))  # (B, M)
+        for b in sorted(buckets):
+            if b >= counts:
+                return b
 
 def update_ema(ema_encoder, encoder, decay: float):
     ema_params, ema_static = eqx.partition(ema_encoder, eqx.is_array)
@@ -163,24 +173,12 @@ def compute_grads(model, x_b, mask_ctx_b, mask_pred_b, num_pad, key):
     
     return loss
 
-
-@eqx.filter_jit
-def step_model(model, ema_encoder, optimizer, state, x, mask_ctx, mask_pred, num_pad, ema_decay, key):
-    """Single training step."""
-    loss, grads = compute_grads(model, x, mask_ctx, mask_pred, num_pad, key)
-    
-    updates, new_state = optimizer.update(grads, state, model)
-    model = eqx.apply_updates(model, updates)
-    
-    # update EMA
-    ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
-
-    # set ema_encoder to model
-    model = eqx.tree_at(lambda m: m.encoder, model, ema_encoder)
-    
-    return model, ema_encoder, new_state, loss
-
 def train_ijepa(
+    # misc
+    num_workers: int = 4,
+    seed: int = 0,
+    resume: str = None,
+    xla_buckets: tuple = (64, 128, 192, 256),
     # data
     data_name: str = "cifar10",
     data_dir: str = ".data",
@@ -197,7 +195,7 @@ def train_ijepa(
     pred_aspect: tuple = (0.75, 1.5),
     ctx_scale: tuple = (0.85, 1.0),
     ctx_aspect: float = 1.0,
-    # ema
+    # encoder ema
     ema_decay: float = 0.996,
     # training
     exp_name: str = "ijepa",
@@ -211,14 +209,12 @@ def train_ijepa(
     save_dir: str = ".checkpoints",
     use_aim: bool = False,
     aim_repo: str = ".aim",
+    use_wandb: bool = False,
+    wandb_project: str = "ijepa",
     save_interval: int = 10,
     print_interval: int = 1,
-    # misc
-    num_workers: int = 4,
-    seed: int = 0,
-    resume: str = None,
     # eval
-    eval_interval: bool = 10,
+    eval_interval: int = 10,
     eval_train_samples: int = 10000,
     eval_val_samples: int = 5000,
     eval_epochs: int = 20,
@@ -227,9 +223,16 @@ def train_ijepa(
     key = jax.random.PRNGKey(seed)
     print(f"JAX backend: {jax.devices()[0].platform}")
     print(f"JAX devices: {jax.devices()}")
+    num_devices = len(jax.devices())
+    mesh = jax.make_mesh((num_devices,), ("batch",))
+    data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
+    model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
 
+    # directory and logging
     Path(save_dir).mkdir(parents=True, exist_ok=True)
-    run_name = f"{exp_name}_{tag}" if tag else f"{exp_name}"
+
+    run_name = f"{model_name}-{data_name.lower()}"
+    run_name = f"{run_name}-{tag}" if tag else run_name
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "a" if resume else "w")
     if not resume:
@@ -303,11 +306,36 @@ def train_ijepa(
         model, ema_encoder, optimizer, opt_state, start_epoch, hparams \
             = load_checkpoint(resume)
 
+    # xla bucketing
+    mask_keys = jax.random.split(jax.random.PRNGKey(0), batch_size)
+    mask_ctx, mask_pred = jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
     
     # Aim logging
     if use_aim: 
         run = aim.Run(repo=aim_repo, experiment=exp_name)
         run["hparams"] = hparams
+    if use_wandb:
+        wandb.init(project=wandb_project, name=run_name, config=hparams)
+    
+
+    # step model
+    @eqx.filter_jit(donate="all")
+    def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, num_pad, key):
+        model, ema_encoder, opt_state = eqx.filter_shard(
+            (model, ema_encoder, opt_state), model_sharding
+        )
+        x, mask_ctx, mask_pred = eqx.filter_shard(
+            (x, mask_ctx, mask_pred), data_sharding
+        )
+        
+        loss, grads = compute_grads(model, x, mask_ctx, mask_pred, num_pad, key)
+        
+        updates, opt_state = optimizer.update(grads, opt_state, model)
+        model = eqx.apply_updates(model, updates)
+        ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
+        model = eqx.tree_at(lambda m: m.encoder, model, ema_encoder)
+        
+        return eqx.filter_shard((model, ema_encoder, opt_state, loss), model_sharding)
 
     # Training loop
     step = 0
@@ -323,7 +351,7 @@ def train_ijepa(
             mask_ctx, mask_pred = jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
             
             # step
-            num_pad = get_num_pad(mask_pred) # get num pred tokens
+            num_pad = get_num_pad(mask_pred, xla_buckets) # get num pred tokens
             model, ema_encoder, opt_state, loss = step_model(
                 model, ema_encoder, optimizer, opt_state,
                 x, mask_ctx, mask_pred,
@@ -334,14 +362,15 @@ def train_ijepa(
             epoch_losses.append(loss)
             step += 1
             
-            if use_aim:
-                run.track(loss.item(), name="loss", step=step, epoch=epoch)
+            if step % 100 == 0:
+                if use_aim:
+                    run.track(loss.item(), name="loss", step=step, epoch=epoch)
+                if use_wandb:
+                    wandb.log({"loss": loss.item(), "epoch": epoch}, step=step)
+            
             pbar.set_postfix(loss=f"{loss:.4f}")
 
-            if i == 1:
-                break
-
-                # Linear probe eval
+        # Linear probe eval
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
             key, eval_key = jax.random.split(key)
             print(f"Running linear probe eval...")
@@ -361,6 +390,8 @@ def train_ijepa(
             if use_aim:
                 run.track(top1, name="probe_top1", epoch=epoch)
                 run.track(top5, name="probe_top5", epoch=epoch)
+            if use_wandb:
+                wandb.log({"probe_top1": top1, "probe_top5": top5, "epoch": epoch})
 
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         
