@@ -322,7 +322,6 @@ def train_ijepa(
             (model, ema_encoder, opt_state), model_sharding
         )
     
-
     # step model
     @eqx.filter_jit(donate="all")
     def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, num_pad, key):
@@ -351,10 +350,9 @@ def train_ijepa(
             
             # step
             num_pad = get_num_pad(mask_pred, xla_buckets) # get num pred tokens
-
-            x, mask_ctx, mask_pred = eqx.filter_shard(
-                     (x, mask_ctx, mask_pred), data_sharding
-                )
+            x = jax.device_put(x, data_sharding)
+            mask_ctx = jax.device_put(mask_ctx, data_sharding)
+            mask_pred = jax.device_put(mask_pred, data_sharding)
 
             model, ema_encoder, opt_state, loss = step_model(
                 model, ema_encoder, opt_state,
