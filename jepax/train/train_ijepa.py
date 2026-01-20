@@ -220,11 +220,13 @@ def train_ijepa(
     eval_val_samples: int = 5000,
     eval_epochs: int = 20,
 ):
-    # Setup
+    # setup
     key = jax.random.PRNGKey(seed)
     print(f"JAX backend: {jax.devices()[0].platform}")
     print(f"JAX devices: {jax.devices()}")
     num_devices = len(jax.devices())
+
+    # sharding setup
     mesh = jax.make_mesh((num_devices,), ("batch",))
     data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
     model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
@@ -315,17 +317,16 @@ def train_ijepa(
     if use_wandb:
         wandb.init(project=wandb_project, name=run_name, config=hparams)
     
+    # shard model
+    model, ema_encoder, opt_state = eqx.filter_shard(
+            (model, ema_encoder, opt_state), model_sharding
+        )
+    
 
     # step model
     @eqx.filter_jit(donate="all")
     def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, num_pad, key):
-        model, ema_encoder, opt_state = eqx.filter_shard(
-            (model, ema_encoder, opt_state), model_sharding
-        )
-        x, mask_ctx, mask_pred = eqx.filter_shard(
-            (x, mask_ctx, mask_pred), data_sharding
-        )
-        
+
         loss, grads = compute_grads(model, x, mask_ctx, mask_pred, num_pad, key)
         
         updates, opt_state = optimizer.update(grads, opt_state, model)
@@ -350,6 +351,11 @@ def train_ijepa(
             
             # step
             num_pad = get_num_pad(mask_pred, xla_buckets) # get num pred tokens
+
+            x, mask_ctx, mask_pred = eqx.filter_shard(
+                     (x, mask_ctx, mask_pred), data_sharding
+                )
+
             model, ema_encoder, opt_state, loss = step_model(
                 model, ema_encoder, opt_state,
                 x, mask_ctx, mask_pred,
