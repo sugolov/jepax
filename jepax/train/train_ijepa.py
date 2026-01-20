@@ -105,7 +105,7 @@ def load_checkpoint(path):
         seq_len=hparams['seq_len'],
     )
     model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
-    ema_encoder = model.encoder
+    ema_encoder = jax.tree.map(lambda x: x, model.encoder)
     
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
@@ -288,7 +288,7 @@ def train_ijepa(
             p_drop=p_drop,
             seq_len=seq_len,
         )
-        ema_encoder = model.encoder
+        ema_encoder = jax.tree.map(lambda x: x, model.encoder)
         
         # Optimizer with weight decay + warmup
         schedule = optax.warmup_cosine_decay_schedule(
