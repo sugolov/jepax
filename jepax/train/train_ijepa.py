@@ -12,11 +12,6 @@ from tqdm import tqdm
 
 from jepax.data import build_dataset
 from jepax.model import get_ijepa_model, IJEPAMasker, IJEPA 
-from jepax.train import save_checkpoint
-
-# -----------------------------------------------------------------------------
-# Args
-# -----------------------------------------------------------------------------
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -68,15 +63,41 @@ def parse_args():
     
     return p.parse_args()
 
+def load_checkpoint(path, model_name, num_classes, seed):
+    import json
+    with open(path + "_meta.json", "r") as f:
+        checkpoint = json.load(f)
 
-# -----------------------------------------------------------------------------
-# EMA utilities
-# -----------------------------------------------------------------------------
+    args = argparse.Namespace(**checkpoint['args'])
+
+    key = jax.random.key(seed)
+    model = get_ijepa_model(name=model_name, key=key)
+
+    model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
+
+    optimizer = optax.adam(learning_rate=args.lr)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
+
+    return model, opt_state, checkpoint['epoch'], args
+
+
+def save_checkpoint(model, opt_state, epoch, args, path):
+    checkpoint = {
+        'epoch': epoch,
+        'args': vars(args)
+    }
+    eqx.tree_serialise_leaves(path + "_model.eqx", model)
+    eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
+
+    import json
+    with open(path + "_meta.json", "w") as f:
+        json.dump(checkpoint, f)
+
 
 def get_num_pad(mask_pred):
     counts = jnp.sum(mask_pred, axis=-1)  # (B, M)
     return int(jnp.max(counts))
-
 
 def update_ema(ema_encoder, encoder, decay: float):
     ema_params, ema_static = eqx.partition(ema_encoder, eqx.is_array)
@@ -117,7 +138,7 @@ def step_model(model, ema_encoder, optimizer, state, x, mask_ctx, mask_pred, num
     updates, new_state = optimizer.update(grads, state, model)
     model = eqx.apply_updates(model, updates)
     
-    # Update EMA
+    # update EMA
     ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
 
     # set ema_encoder to model
@@ -125,10 +146,6 @@ def step_model(model, ema_encoder, optimizer, state, x, mask_ctx, mask_pred, num
     
     return model, ema_encoder, new_state, loss
 
-
-# -----------------------------------------------------------------------------
-# Main training loop
-# -----------------------------------------------------------------------------
 def train_ijepa(
     # data
     data_name: str = "cifar10",
@@ -151,7 +168,7 @@ def train_ijepa(
     # training
     exp_name: str = "ijepa",
     tag: str = None,
-    epochs: int = 100,
+    epochs: int = 300,
     batch_size: int = 64,
     lr: float = 1e-4,
     weight_decay: float = 0.05,
@@ -276,8 +293,6 @@ def train_ijepa(
         # Save checkpoint
         if (epoch + 1) % save_interval == 0:
             checkpoint_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch+1}")
-            # TODO: save both model and ema_encoder
-            # Note: save_checkpoint expects an args namespace, you may need to adapt this
             save_checkpoint(model, state, epoch + 1, hparams, checkpoint_path)
             print(f"Saved checkpoint to {checkpoint_path}")
 
