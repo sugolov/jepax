@@ -2,6 +2,7 @@ import os
 import argparse
 from pathlib import Path
 from datetime import datetime
+import time
 
 import jax
 from jax import numpy as jnp
@@ -158,9 +159,7 @@ def update_ema(ema_encoder, encoder, decay: float):
 @eqx.filter_jit
 def compute_target_reps(ema_encoder, x_b, key):
     keys = jax.random.split(key, x_b.shape[0])
-    z_ema = jax.vmap(
-        lambda k, x: ema_encoder(k, x, train=False)
-    )(keys, x_b)
+    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, train=False))(keys, x_b)
     return z_ema
 
 
@@ -319,17 +318,27 @@ def train_ijepa(
             = load_checkpoint(resume)
         embed_dim = hparams['embed_dim']
 
-    # logging
+    
     if use_aim: 
         run = aim.Run(repo=aim_repo, experiment=run_name)
-        run["hparams"] = hparams
     if use_wandb:
         wandb.init(project=wandb_project, name=run_name, config=hparams)
+
+    if eval_interval > 0 and start_epoch==0:
+            if use_aim:
+                run.track(1 / num_classes, name="probe_top1", epoch=start_epoch)
+                run.track(5 / num_classes, name="probe_top5", epoch=start_epoch)
+            if use_wandb:
+                wandb.log({
+                    "probe_top1": 1 / num_classes, 
+                    "probe_top5": 5 / num_classes, 
+                    "epoch": start_epoch})
     
     # shard model
     model, ema_encoder, opt_state = eqx.filter_shard(
             (model, ema_encoder, opt_state), model_sharding
         )
+    
     
     # step model
     @eqx.filter_jit
@@ -346,6 +355,7 @@ def train_ijepa(
     # training loop
     step = 0
     for epoch in range(start_epoch, epochs):
+        time_ep_start = time.time()
         epoch_losses = []
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
@@ -381,9 +391,17 @@ def train_ijepa(
                 if use_aim:
                     run.track(loss.item(), name="loss", step=step, epoch=epoch)
                 if use_wandb:
-                    wandb.log({"loss": loss.item(), "epoch": epoch}, step=step)
+                    wandb.log({
+                        "loss": loss.item(), 
+                        "epoch": epoch,
+                        "lr": lr,
+                    }, 
+                        step=step
+                    )
             
             pbar.set_postfix(loss=f"{loss:.4f}")
+
+            
 
         # Linear probe eval
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
@@ -409,10 +427,22 @@ def train_ijepa(
                 wandb.log({"probe_top1": top1, "probe_top5": top5, "epoch": epoch})
 
         avg_loss = sum(epoch_losses) / len(epoch_losses)
+        epoch_time = time.time() - time_ep_start
         
-        print(f"Epoch {epoch+1}/{epochs}:, Avg Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch+1}/{epochs}: avg. loss {avg_loss:.4f}")
         logf.write(f"{epoch+1},{avg_loss:.4f}\n")
         logf.flush()
+
+        if use_aim:
+            run.track(avg_loss, name="avg_loss", step=step, epoch=epoch)
+        if use_wandb:
+            wandb.log({
+                "avg_loss": avg_loss, 
+                "epoch_time": epoch_time,
+                "epoch": epoch,
+            }, 
+                step=step
+            )
 
         # Save checkpoint
         if (epoch + 1) % save_interval == 0:
