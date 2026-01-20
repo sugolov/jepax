@@ -120,7 +120,7 @@ class Attention(eqx.Module):
             mask = mask_causal
         elif self.causal:
             # but if causal, and mask is passed, then we mask out both
-            mask = (mask | mask_causal)
+            mask = mask.astype(bool) | mask_causal
 
         
         vals = self._attention(q, k, v, mask=mask)  # (H, S, D/H)
