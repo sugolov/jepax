@@ -332,7 +332,7 @@ def train_ijepa(
         )
     
     # step model
-    @eqx.filter_jit(donate="all")
+    @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, key):
 
         loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, num_pad, key)
