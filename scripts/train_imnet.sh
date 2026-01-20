@@ -1,0 +1,30 @@
+#!/bin/bash
+
+source .venv/bin/activate
+python -m jepax.train.train_ijepa \
+    --seed 0 \
+    --num_workers 8 \
+     --xla_buckets 64 128 192 256 \
+    --data_name imnet \
+    --data_dir ~/data/imnet \
+    --model_name ijepa-b \
+    --save_dir ~/checkpoints/ijepa/ijepa-b-imagenet \
+    --use_wandb \
+    --wandb_project ijepa \
+    --save_interval 10 \
+    --patch_size 14 \
+    --seq_len 256 \
+    --num_channels 3 \
+    --batch_size 2048 \
+    --epochs 300 \
+    --lr 1.5e-4 \
+    --weight_decay 0.05 \
+    --warmup_epochs 40 \
+    --ema_decay 0.996 \
+    --num_pred_masks 4 \
+    --pred_scale 0.15 0.2 \
+    --pred_aspect 0.75 1.5 \
+    --ctx_scale 0.85 1.0 \
+    --ctx_aspect 1.0 \
+    --eval_interval 10 \
+    --eval_epochs 20 

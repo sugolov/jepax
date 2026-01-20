@@ -20,17 +20,45 @@ import wandb
 def parse_args():
     p = argparse.ArgumentParser()
     
+    # misc
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
+    p.add_argument("--resume", type=str, default=None)
+    
     # data
     p.add_argument("--data_name", type=str, default="cifar10")
     p.add_argument("--data_dir", type=str, default=".data")
-    p.add_argument("--num_channels", type=int, default=3)
     
     # model
     p.add_argument("--model_name", type=str, default="ijepa-test",
                    choices=["ijepa-ti", "ijepa-s", "ijepa-b", "ijepa-l", "ijepa-h", "ijepa-test"])
+    
+    # logging/checkpointing
+    p.add_argument("--save_dir", type=str, default=".checkpoints")
+    p.add_argument("--use_wandb", action="store_true")
+    p.add_argument("--wandb_project", type=str, default="ijepa")
+    p.add_argument("--use_aim", action="store_true")
+    p.add_argument("--aim_repo", type=str, default=".aim")
+    p.add_argument("--save_interval", type=int, default=10)
+    p.add_argument("--print_interval", type=int, default=1)
+    p.add_argument("--tag", type=str, default=None)
+    
+    # model architecture
     p.add_argument("--patch_size", type=int, default=4)
-    p.add_argument("--p_drop", type=float, default=0.0)
     p.add_argument("--seq_len", type=int, default=256)
+    p.add_argument("--num_channels", type=int, default=3)
+    p.add_argument("--p_drop", type=float, default=0.0)
+    
+    # training
+    p.add_argument("--batch_size", type=int, default=64)
+    p.add_argument("--epochs", type=int, default=300)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--weight_decay", type=float, default=0.05)
+    p.add_argument("--warmup_epochs", type=int, default=10)
+    
+    # ema
+    p.add_argument("--ema_decay", type=float, default=0.996)
     
     # masking
     p.add_argument("--num_pred_masks", type=int, default=4)
@@ -40,38 +68,11 @@ def parse_args():
     p.add_argument("--ctx_scale", type=float, nargs=2, default=[0.85, 1.0])
     p.add_argument("--ctx_aspect", type=float, default=1.0)
     
-    # ema
-    p.add_argument("--ema_decay", type=float, default=0.996)
-    
-    # training
-    p.add_argument("--exp_name", type=str, default="ijepa")
-    p.add_argument("--tag", type=str, default=None)
-    p.add_argument("--epochs", type=int, default=300)
-    p.add_argument("--batch_size", type=int, default=64)
-    p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--weight_decay", type=float, default=0.05)
-    p.add_argument("--warmup_epochs", type=int, default=10)
-
     # eval
     p.add_argument("--eval_interval", type=int, default=10)
+    p.add_argument("--eval_epochs", type=int, default=20)
     p.add_argument("--eval_train_samples", type=int, default=10000)
     p.add_argument("--eval_val_samples", type=int, default=5000)
-    p.add_argument("--eval_epochs", type=int, default=20)
-    
-    # logging/checkpointing
-    p.add_argument("--save_dir", type=str, default=".checkpoints")
-    p.add_argument("--use_aim", action="store_true")
-    p.add_argument("--aim_repo", type=str, default=".aim")
-    p.add_argument("--use_wandb", action="store_true")
-    p.add_argument("--wandb_project", type=str, default="ijepa")
-    p.add_argument("--save_interval", type=int, default=10)
-    p.add_argument("--print_interval", type=int, default=1)
-    
-    # misc
-    p.add_argument("--num_workers", type=int, default=4)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--resume", type=str, default=None)
-    p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
 
     return p.parse_args()
 
@@ -136,12 +137,12 @@ def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
 
 def get_num_pad(mask_pred, buckets=None):
     if buckets is None:
-        return mask_pred.shape[-1] # max bucket
-    else:
-        counts = int(jnp.max(jnp.sum(mask_pred, axis=-1)))  # (B, M)
-        for b in sorted(buckets):
-            if b >= counts:
-                return b
+        return mask_pred.shape[-1]
+    counts = int(jnp.max(jnp.sum(mask_pred, axis=-1)))
+    for b in sorted(buckets):
+        if b >= counts:
+            return b
+    return buckets[-1]
 
 def update_ema(ema_encoder, encoder, decay: float):
     ema_params, ema_static = eqx.partition(ema_encoder, eqx.is_array)
@@ -198,7 +199,7 @@ def train_ijepa(
     # encoder ema
     ema_decay: float = 0.996,
     # training
-    exp_name: str = "ijepa",
+    #exp_name: str = "ijepa",
     tag: str = None,
     epochs: int = 300,
     batch_size: int = 64,
@@ -294,7 +295,7 @@ def train_ijepa(
             data_name=data_name, data_dir=data_dir, img_size=img_size, num_channels=num_channels,
             model_name=model_name, embed_dim=embed_dim, patch_size=patch_size, p_drop=p_drop, seq_len=seq_len,
             num_pred_masks=num_pred_masks, num_pad=num_pad, pred_scale=pred_scale, ctx_scale=ctx_scale,
-            ema_decay=ema_decay, exp_name=exp_name, tag=tag, epochs=epochs, batch_size=batch_size,
+            ema_decay=ema_decay, tag=tag, epochs=epochs, batch_size=batch_size,
             steps_per_epoch=steps_per_epoch, lr=lr, weight_decay=weight_decay, 
             warmup_epochs=warmup_epochs, save_dir=save_dir,
             aim_repo=aim_repo, save_interval=save_interval, print_interval=print_interval,
@@ -305,14 +306,11 @@ def train_ijepa(
     else:
         model, ema_encoder, optimizer, opt_state, start_epoch, hparams \
             = load_checkpoint(resume)
+        embed_dim = hparams['embed_dim']
 
-    # xla bucketing
-    mask_keys = jax.random.split(jax.random.PRNGKey(0), batch_size)
-    mask_ctx, mask_pred = jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
-    
-    # Aim logging
+    # logging
     if use_aim: 
-        run = aim.Run(repo=aim_repo, experiment=exp_name)
+        run = aim.Run(repo=aim_repo, experiment=run_name)
         run["hparams"] = hparams
     if use_wandb:
         wandb.init(project=wandb_project, name=run_name, config=hparams)
@@ -353,9 +351,9 @@ def train_ijepa(
             # step
             num_pad = get_num_pad(mask_pred, xla_buckets) # get num pred tokens
             model, ema_encoder, opt_state, loss = step_model(
-                model, ema_encoder, optimizer, opt_state,
+                model, ema_encoder, opt_state,
                 x, mask_ctx, mask_pred,
-                num_pad, ema_decay, step_key
+                num_pad, step_key
             )
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
             
