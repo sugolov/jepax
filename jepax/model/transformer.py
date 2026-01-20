@@ -7,7 +7,7 @@ from jaxtyping import Array, PRNGKeyArray
 
 class PositionalEncoding(eqx.Module):
     """Sinusoidal positional encoding"""
-    pe: Array
+    pe: Array = eqx.field(static=True)
     dim: int  = eqx.field(static=True)
     
     def __init__(self, dim: int, seq_len: int = 5000):
@@ -17,7 +17,7 @@ class PositionalEncoding(eqx.Module):
         div_term = np.exp(np.arange(0, dim, 2) * (-np.log(10000.0) / dim))
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = jax.lax.stop_gradient(np.array(pe))
+        self.pe = np.array(pe)
 
     def pe_from_idx(self, idx):
         return jax.lax.stop_gradient(jnp.take(self.pe, idx, axis=0))
@@ -30,7 +30,7 @@ class PositionalEncoding(eqx.Module):
 
     
 class PositionalEncoding2D(PositionalEncoding):
-    grid: Array
+    grid: Array = eqx.field(static=True)
     dim: int = eqx.field(static=True)
     
     def __init__(self, grid_size: int, dim: int, seq_len: int = 5000):
@@ -40,17 +40,17 @@ class PositionalEncoding2D(PositionalEncoding):
         self.grid = self._get_pe_grid(grid_size)
         
     def _get_pe_grid(self, grid_size):
-        grid_h = np.arange(grid_size, dtype=float)
-        grid_w = np.arange(grid_size, dtype=float)
+        grid_h = np.arange(grid_size, dtype=int)
+        grid_w = np.arange(grid_size, dtype=int)
         grid = np.meshgrid(grid_w, grid_h)
         grid = np.stack(grid, axis=0).astype(int)
-        return jax.lax.stop_gradient(grid)
+        return grid
     
     def _get_pe_from_grid(self, grid):
         encx = self.pe_from_idx(grid[0].flatten())
         ency = self.pe_from_idx(grid[1].flatten())
         enc = jnp.concatenate([encx, ency], axis=-1) # concatenate halved dims
-        return jax.lax.stop_gradient(enc)
+        return enc
 
     def __call__(self, x):
         """
@@ -198,7 +198,7 @@ class Transformer(eqx.Module):
         dim: int,
         num_layers: int,
         num_head: int,
-        causal: bool = True,
+        causal: bool = False,
         mlp_ratio: float = 3.0,
         p_drop: float = 0.1,
         seq_len: int = 2048,

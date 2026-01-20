@@ -27,7 +27,7 @@ ijepa_encoder_configs = {
 ijepa_predictor_configs = {
     "pred-ti": {"latent_dim": 96, "num_layers": 6, "num_head": 3, "mlp_ratio": 4.0},
     "pred-s": {"latent_dim": 192, "num_layers": 6, "num_head": 6, "mlp_ratio": 4.0},
-    "pred-b": {"latent_dim": 384, "num_layers": 12, "num_head": 12, "mlp_ratio": 4.0},
+    "pred-b": {"latent_dim": 384, "num_layers": 6, "num_head": 12, "mlp_ratio": 4.0},
     "pred-l": {"latent_dim": 512, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
     "pred-h": {"latent_dim": 640, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
     "test": {"latent_dim": 32, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
@@ -194,7 +194,8 @@ class IJEPAEncoder(eqx.Module):
             seq_len=seq_len,
             grid_size=img_size // patch_size,
             pe_type="2d",
-            key=k2
+            key=k2,
+            causal=False
         )
         self.mask_token = jax.random.normal(k3, (1, dim))
 
@@ -242,7 +243,8 @@ class IJEPAPredictor(eqx.Module):
             mlp_ratio=mlp_ratio,
             p_drop=p_drop,
             seq_len=seq_len,
-            key=k2
+            key=k2,
+            causal=False
         )
         self.mask_token = jax.random.normal(k3, (1, latent_dim))
         self.pred_token = jax.random.normal(k4, (1, latent_dim))
