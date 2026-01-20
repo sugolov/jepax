@@ -374,11 +374,12 @@ def train_ijepa(
 
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
 
-            print(f"x: {x.shape}")
-            print(f"z_ema: {z_ema.shape}")
-            print(f"mask_ctx: {mask_ctx.shape}")
-            print(f"mask_pred: {mask_pred.shape}")
-            print(f"num_pad: {num_pad}")
+            if step == 0:
+                print(f"x: {x.shape}")
+                print(f"z_ema: {z_ema.shape}")
+                print(f"mask_ctx: {mask_ctx.shape}")
+                print(f"mask_pred: {mask_pred.shape}")
+                print(f"num_pad: {num_pad}")
 
             model, opt_state, loss = step_model(
                 model, opt_state,
