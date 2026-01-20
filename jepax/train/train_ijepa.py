@@ -4,6 +4,8 @@ from pathlib import Path
 from datetime import datetime
 import time
 
+from functools import partial
+
 import jax
 from jax import numpy as jnp
 import jax.sharding as jshard
@@ -351,6 +353,11 @@ def train_ijepa(
         model = eqx.apply_updates(model, updates)
         
         return eqx.filter_shard((model, opt_state, loss), model_sharding)
+    
+    @partial(jax.jit, static_argnums=(1, 2, 3))
+    def generate_masks(key, masker, num_pred_masks, batch_size):
+        mask_keys = jax.random.split(key, batch_size)
+        return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
 
     # training loop
     step = 0
@@ -363,8 +370,7 @@ def train_ijepa(
             key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             
             # generate masks via vmap
-            mask_keys = jax.random.split(mask_key, batch_size)
-            mask_ctx, mask_pred = jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
+            mask_ctx, mask_pred = generate_masks(mask_key, masker, num_pred_masks, batch_size)
             
             # step
             num_pad = get_num_pad(mask_pred, xla_buckets) # get num pred tokens
