@@ -13,6 +13,8 @@ jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/pat
 - fix lr log
 - make sure eval is correctly sharded and is not OOMing
 - think about sharding predictor to a different gpu
+- initialize vit weights correctly
+- triple check configs with ijepa paper
 
 ## Installation
 
