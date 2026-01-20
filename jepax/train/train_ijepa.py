@@ -155,21 +155,23 @@ def update_ema(ema_encoder, encoder, decay: float):
     return eqx.combine(new_ema_params, ema_static)
 
 
+@eqx.filter_jit
+def compute_target_reps(ema_encoder, x_b, key):
+    keys = jax.random.split(key, x_b.shape[0])
+    z_ema = jax.vmap(
+        lambda k, x: ema_encoder(k, x, train=False)
+    )(keys, x_b)
+    return z_ema
+
+
 @eqx.filter_value_and_grad
-def compute_grads(model, ema_encoder, x_b, mask_ctx_b, mask_pred_b, num_pad, key):
+def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
     keys = jax.random.split(key, x_b.shape[0])
 
     # ijepa forward
     _, z_pred, mask_idx = jax.vmap(
         lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=num_pad, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
-
-    # ema_representations
-    keys = jax.random.split(keys[0], x_b.shape[0])
-    z_ema = jax.vmap(
-        lambda k, x: ema_encoder(k, x, train=False)
-    )(keys, x_b)
-    z_ema = jax.lax.stop_gradient(z_ema) # stop grad flow
 
     # padded loss calculation
     valid = mask_idx >= 0  # (B, num_pad)
@@ -330,16 +332,16 @@ def train_ijepa(
         )
     
     # step model
-    @eqx.filter_jit(donate="all-except-first")
-    def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, num_pad, key):
+    @eqx.filter_jit(donate="all")
+    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, key):
 
-        loss, grads = compute_grads(model, ema_encoder, x, mask_ctx, mask_pred, num_pad, key)
+        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, num_pad, key)
         
         updates, opt_state = optimizer.update(grads, opt_state, model)
 
         model = eqx.apply_updates(model, updates)
         
-        return eqx.filter_shard((model, ema_encoder, opt_state, loss), model_sharding)
+        return eqx.filter_shard((model, opt_state, loss), model_sharding)
 
     # training loop
     step = 0
@@ -348,7 +350,7 @@ def train_ijepa(
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
         for i, (x, _) in enumerate(pbar):  # ignore labels
-            key, step_key, mask_key = jax.random.split(key, 3)
+            key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             
             # generate masks via vmap
             mask_keys = jax.random.split(mask_key, batch_size)
@@ -360,9 +362,11 @@ def train_ijepa(
             mask_ctx = jax.device_put(mask_ctx, data_sharding)
             mask_pred = jax.device_put(mask_pred, data_sharding)
 
-            model, ema_encoder, opt_state, loss = step_model(
-                model, ema_encoder, opt_state,
-                x, mask_ctx, mask_pred,
+            z_ema = compute_target_reps(ema_encoder, x, ema_key)
+
+            model, opt_state, loss = step_model(
+                model, opt_state,
+                x, z_ema, mask_ctx, mask_pred,
                 num_pad, step_key
             )
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
