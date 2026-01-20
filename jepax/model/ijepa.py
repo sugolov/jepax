@@ -123,7 +123,7 @@ def get_ijepa_model(
     encoder = IJEPAEncoder(**enc_config, key=k1)
     predictor = IJEPAPredictor(**pred_config, key=k2)
     
-    return IJEPA(encoder=encoder, predictor=predictor)
+    return IJEPA(encoder=encoder, predictor=predictor), enc_config["dim"]
 
 
 # Convenience for custom encoder/predictor combos

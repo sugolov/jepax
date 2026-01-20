@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from jepax.data import build_dataset
 from jepax.model import get_ijepa_model, IJEPAMasker, IJEPA 
+from jepax.train.eval_ijepa import evaluate_linear_probe
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -50,6 +51,12 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=0.05)
     p.add_argument("--warmup_epochs", type=int, default=10)
+
+    # eval
+    p.add_argument("--eval_interval", type=int, default=10)
+    p.add_argument("--eval_train_samples", type=int, default=10000)
+    p.add_argument("--eval_val_samples", type=int, default=5000)
+    p.add_argument("--eval_epochs", type=int, default=20)
     
     # logging/checkpointing
     p.add_argument("--save_dir", type=str, default=".checkpoints")
@@ -63,37 +70,64 @@ def parse_args():
     
     return p.parse_args()
 
-def load_checkpoint(path, model_name, num_classes, seed):
+def save_checkpoint(model, opt_state, epoch, hparams, path):
+    import json
+    if hasattr(hparams, '__dict__'):
+        hparams = vars(hparams)
+    
+    eqx.tree_serialise_leaves(path + "_model.eqx", model)
+    eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
+    
+    with open(path + "_meta.json", "w") as f:
+        json.dump({'epoch': epoch, 'args': hparams}, f, indent=2)
+
+
+def load_checkpoint(path):
     import json
     with open(path + "_meta.json", "r") as f:
         checkpoint = json.load(f)
-
-    args = argparse.Namespace(**checkpoint['args'])
-
-    key = jax.random.key(seed)
-    model = get_ijepa_model(name=model_name, key=key)
-
+    
+    hparams = checkpoint['args']
+    
+    model = get_ijepa_model(
+        hparams['model_name'],
+        key=jax.random.PRNGKey(hparams['seed']),
+        num_channels=hparams['num_channels'],
+        patch_size=hparams['patch_size'],
+        img_size=hparams['img_size'],
+        p_drop=hparams['p_drop'],
+        seq_len=hparams['seq_len'],
+    )
     model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
-
-    optimizer = optax.adam(learning_rate=args.lr)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
+    ema_encoder = model.encoder
+    
+    schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=hparams['lr'],
+        warmup_steps=hparams['warmup_epochs'] * hparams['steps_per_epoch'],
+        decay_steps=hparams['epochs'] * hparams['steps_per_epoch'],
+    )
+    optimizer = optax.adamw(learning_rate=schedule, weight_decay=hparams['weight_decay'])
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
+    
+    return model, ema_encoder, optimizer, opt_state, checkpoint['epoch'], hparams
 
-    return model, opt_state, checkpoint['epoch'], args
-
-
-def save_checkpoint(model, opt_state, epoch, args, path):
-    checkpoint = {
-        'epoch': epoch,
-        'args': vars(args)
-    }
-    eqx.tree_serialise_leaves(path + "_model.eqx", model)
-    eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
-
-    import json
-    with open(path + "_meta.json", "w") as f:
-        json.dump(checkpoint, f)
-
+def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
+               max_train_samples=None, max_val_samples=None, n_epochs=20):
+    """Run linear probe evaluation."""
+    top1, top5 = evaluate_linear_probe(
+        encoder=encoder,
+        embed_dim=embed_dim,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        num_classes=num_classes,
+        key=key,
+        n_epochs=n_epochs,
+        max_train_samples=max_train_samples,
+        max_val_samples=max_val_samples,
+    )
+    return top1, top5
 
 def get_num_pad(mask_pred):
     counts = jnp.sum(mask_pred, axis=-1)  # (B, M)
@@ -183,6 +217,11 @@ def train_ijepa(
     num_workers: int = 4,
     seed: int = 0,
     resume: str = None,
+    # eval
+    eval_interval: bool = 10,
+    eval_train_samples: int = 10000,
+    eval_val_samples: int = 5000,
+    eval_epochs: int = 20,
 ):
     # Setup
     key = jax.random.PRNGKey(seed)
@@ -190,22 +229,27 @@ def train_ijepa(
     print(f"JAX devices: {jax.devices()}")
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
-
-    tag = tag if tag else datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{exp_name}_{tag}"
+    run_name = f"{exp_name}_{tag}" if tag else f"{exp_name}"
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "a" if resume else "w")
     if not resume:
         logf.write("Epoch,Avg_Loss\n")
 
     # Create dataset + masker
-    dataloader, _, n_batch, img_size = build_dataset(
+    dataloader, num_classes, steps_per_epoch, img_size = build_dataset(
         data_name,
         data_dir,
         batch_size=batch_size,
         num_workers=num_workers,
         is_train=True
     )
+
+    if eval_interval > 0:
+        val_loader, _, _, _ = build_dataset(
+            data_name, data_dir, batch_size=batch_size,
+            num_workers=num_workers, is_train=False
+        )
+
     masker = IJEPAMasker(
         height=img_size,
         width=img_size,
@@ -216,39 +260,49 @@ def train_ijepa(
         pred_aspect=tuple(pred_aspect) if isinstance(pred_aspect, list) else pred_aspect,
     )
 
-    # Create model
-    key, key_model = jax.random.split(key)
-    model = get_ijepa_model(
-        model_name,
-        key=key_model,
-        num_channels=num_channels,
-        patch_size=patch_size,
-        img_size=img_size,
-        p_drop=p_drop,
-        seq_len=seq_len,
-    )
-    ema_encoder = model.encoder
-    
-    # Optimizer with weight decay + warmup
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=lr,
-        warmup_steps=warmup_epochs * n_batch,
-        decay_steps=epochs * n_batch,
-    )
-    optimizer = optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
-    state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
-    
-    # Collect hparams for logging
-    hparams = dict(
-        data_name=data_name, data_dir=data_dir, img_size=img_size, num_channels=num_channels,
-        model_name=model_name, patch_size=patch_size, p_drop=p_drop, seq_len=seq_len,
-        num_pred_masks=num_pred_masks, num_pad=num_pad, pred_scale=pred_scale, ctx_scale=ctx_scale,
-        ema_decay=ema_decay, exp_name=exp_name, tag=tag, epochs=epochs, batch_size=batch_size,
-        lr=lr, weight_decay=weight_decay, warmup_epochs=warmup_epochs, save_dir=save_dir,
-        aim_repo=aim_repo, save_interval=save_interval, print_interval=print_interval,
-        num_workers=num_workers, seed=seed, resume=resume,
-    )
+    # checkpointing
+    if resume is None:
+        # Create model
+        key, key_model = jax.random.split(key)
+        model, embed_dim = get_ijepa_model(
+            model_name,
+            key=key_model,
+            num_channels=num_channels,
+            patch_size=patch_size,
+            img_size=img_size,
+            p_drop=p_drop,
+            seq_len=seq_len,
+        )
+        ema_encoder = model.encoder
+        
+        # Optimizer with weight decay + warmup
+        schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=lr,
+            warmup_steps=warmup_epochs * steps_per_epoch,
+            decay_steps=epochs * steps_per_epoch,
+        )
+        optimizer = optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
+        opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+
+
+        # Collect hparams for logging
+        hparams = dict(
+            data_name=data_name, data_dir=data_dir, img_size=img_size, num_channels=num_channels,
+            model_name=model_name, embed_dim=embed_dim, patch_size=patch_size, p_drop=p_drop, seq_len=seq_len,
+            num_pred_masks=num_pred_masks, num_pad=num_pad, pred_scale=pred_scale, ctx_scale=ctx_scale,
+            ema_decay=ema_decay, exp_name=exp_name, tag=tag, epochs=epochs, batch_size=batch_size,
+            steps_per_epoch=steps_per_epoch, lr=lr, weight_decay=weight_decay, 
+            warmup_epochs=warmup_epochs, save_dir=save_dir,
+            aim_repo=aim_repo, save_interval=save_interval, print_interval=print_interval,
+            num_workers=num_workers, seed=seed, resume=resume,
+        )
+
+        start_epoch = 0
+    else:
+        model, ema_encoder, optimizer, opt_state, start_epoch, hparams \
+            = load_checkpoint(resume)
+
     
     # Aim logging
     if use_aim: 
@@ -257,11 +311,11 @@ def train_ijepa(
 
     # Training loop
     step = 0
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         epoch_losses = []
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
-        for x, _ in pbar:  # ignore labels
+        for i, (x, _) in enumerate(pbar):  # ignore labels
             key, step_key, mask_key = jax.random.split(key, 3)
             
             # generate masks via vmap
@@ -270,8 +324,8 @@ def train_ijepa(
             
             # step
             num_pad = get_num_pad(mask_pred) # get num pred tokens
-            model, ema_encoder, state, loss = step_model(
-                model, ema_encoder, optimizer, state,
+            model, ema_encoder, opt_state, loss = step_model(
+                model, ema_encoder, optimizer, opt_state,
                 x, mask_ctx, mask_pred,
                 num_pad, ema_decay, step_key
             )
@@ -284,20 +338,43 @@ def train_ijepa(
                 run.track(loss.item(), name="loss", step=step, epoch=epoch)
             pbar.set_postfix(loss=f"{loss:.4f}")
 
+            if i == 1:
+                break
+
+                # Linear probe eval
+        if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
+            key, eval_key = jax.random.split(key)
+            print(f"Running linear probe eval...")
+            top1, top5 = eval_probe(
+                encoder=ema_encoder,
+                embed_dim=embed_dim,
+                train_loader=dataloader,
+                val_loader=val_loader,
+                num_classes=num_classes,
+                key=eval_key,
+                max_train_samples=eval_train_samples,
+                max_val_samples=eval_val_samples,
+                n_epochs=eval_epochs,
+            )
+            print(f"Epoch {epoch+1}/{epochs}: top1 {top1*100:.2f}%, top5 {top5*100:.2f}%")
+            
+            if use_aim:
+                run.track(top1, name="probe_top1", epoch=epoch)
+                run.track(top5, name="probe_top5", epoch=epoch)
+
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         
-        print(f"Epoch: {epoch+1}/{epochs}, Avg Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch+1}/{epochs}:, Avg Loss: {avg_loss:.4f}")
         logf.write(f"{epoch+1},{avg_loss:.4f}\n")
         logf.flush()
 
         # Save checkpoint
         if (epoch + 1) % save_interval == 0:
             checkpoint_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch+1}")
-            save_checkpoint(model, state, epoch + 1, hparams, checkpoint_path)
-            print(f"Saved checkpoint to {checkpoint_path}")
+            save_checkpoint(model, opt_state, epoch + 1, hparams, checkpoint_path)
+            print(f"Epoch {epoch+1}/{epochs}: Saved checkpoint to {checkpoint_path}")
 
     logf.close()
-    return model, ema_encoder, state
 
 
 if __name__ == "__main__":
