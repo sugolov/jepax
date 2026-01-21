@@ -153,6 +153,7 @@ def get_num_pad(mask_pred, buckets=None):
             return b
     return buckets[-1]
 
+@jax.jit
 def update_ema(ema_encoder, encoder, decay: float):
     ema_params, ema_static = eqx.partition(ema_encoder, eqx.is_array)
     enc_params, _ = eqx.partition(encoder, eqx.is_array)
