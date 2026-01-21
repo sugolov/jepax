@@ -9,6 +9,11 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from torchvision.datasets.folder import ImageFolder, default_loader
 
+def _worker_init_fn(_):
+    import os
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
 
 def numpy_collate(batch):
     """Collate function to convert batch to numpy arrays in BHWC format"""
@@ -69,7 +74,8 @@ def build_dataset(
         prefetch_factor=4,
         drop_last=is_train,
         collate_fn=numpy_collate,
-        persistent_workers=True
+        persistent_workers=True,
+        worker_init_fn=_worker_init_fn
     )
     
     return dataloader, num_classes, len(dataloader), image_size
