@@ -69,6 +69,7 @@ def build_dataset(
         prefetch_factor=4,
         drop_last=is_train,
         collate_fn=numpy_collate,
+        persistent_workers=True
     )
     
     return dataloader, num_classes, len(dataloader), image_size
