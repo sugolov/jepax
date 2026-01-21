@@ -7,7 +7,7 @@ python -m jepax.train.train_ijepa \
     --num_workers 8 \
     --xla_buckets 64 128 192 256 \
     --data_name imnet \
-    --data_dir ~/data/imnet \
+    --data_dir ~/data/imagenet \
     --model_name ijepa-b \
     --save_dir ~/anton/checkpoints/ijepa/ijepa-b-imagenet \
     --save_interval 10 \
