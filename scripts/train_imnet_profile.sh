@@ -16,7 +16,7 @@ python -m jepax.train.train_ijepa \
     --patch_size 14 \
     --seq_len 256 \
     --num_channels 3 \
-    --batch_size 2048 \
+    --batch_size 512 \
     --lr 1.5e-4 \
     --epochs 300 \
     --eval_interval 10 \
