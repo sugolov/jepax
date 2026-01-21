@@ -6,8 +6,6 @@ jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/pat
 
 # TODO
 - fix bool masks to indices to take less memory with masker
-- gpu profile
-- compute mfu
 - smarter cached masking
 - compute whether training is reasonable for wandb run
 - fix lr log
@@ -15,8 +13,15 @@ jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/pat
 - think about sharding predictor to a different gpu
 - initialize vit weights correctly
 - triple check configs with ijepa paper
+- add gradient checkpointing
+- gpu profile5
+- compute mfu
+- add imnet22k download option
+
+https://ui.perfetto.dev
 
 ## Installation
+
 
 ```bash
 git clone https://github.com/sugolov/jepax.git
@@ -26,10 +31,21 @@ pip install -e .
 
 ### Dependencies 
 --- 
+
+Install `opencv`, required for `ffcv`: https://github.com/libffcv/ffcv-imagenet
+```
+brew install opencv pkg-config
+```
+```
+sudo apt update
+sudo apt install -y libopencv-dev pkg-config libturbojpeg0-dev
+```
+
+
 ```
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax pytest torch torchvision wandb numpy matplotlib tqdm aim huggingface_hub datasets
+python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax pytest torch torchvision wandb numpy matplotlib tqdm aim huggingface_hub datasets ffcv
 ```
 
 ### Dataset

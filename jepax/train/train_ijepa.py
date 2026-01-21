@@ -28,7 +28,13 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
     p.add_argument("--resume", type=str, default=None)
-    
+
+    # profiling
+    p.add_argument("--profile", action="store_true")
+    p.add_argument("--profile_start_step", type=int, default=10)
+    p.add_argument("--profile_end_step", type=int, default=60)
+    p.add_argument("--profile_log_dir", type=str, default=".logs")
+
     # data
     p.add_argument("--data_name", type=str, default="cifar10")
     p.add_argument("--data_dir", type=str, default=".data")
@@ -201,7 +207,7 @@ def train_ijepa(
     seq_len: int = 256,
     # masking
     num_pred_masks: int = 4,
-    num_pad: int = 64,
+    num_pad: int = 128,
     pred_scale: tuple = (0.15, 0.2),
     pred_aspect: tuple = (0.75, 1.5),
     ctx_scale: tuple = (0.85, 1.0),
@@ -229,6 +235,11 @@ def train_ijepa(
     eval_train_samples: int = 10000,
     eval_val_samples: int = 5000,
     eval_epochs: int = 20,
+    # profiling
+    profile: bool = False,
+    profile_start_step: int = 10,
+    profile_end_step: int = 60,
+    profile_log_dir: str = ".logs/profile",
 ):
     # setup
     key = jax.random.PRNGKey(seed)
@@ -248,10 +259,9 @@ def train_ijepa(
     run_name = f"{run_name}-{tag}" if tag else run_name
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "a" if resume else "w")
-    if not resume:
-        logf.write("Epoch,Avg_Loss\n")
+    if not resume: logf.write("Epoch,Avg_Loss\n")
 
-    # Create dataset + masker
+    # create dataset and mask collator
     dataloader, num_classes, steps_per_epoch, img_size = build_dataset(
         data_name,
         data_dir,
@@ -278,7 +288,7 @@ def train_ijepa(
 
     # checkpointing
     if resume is None:
-        # Create model
+        # initialize model
         key, key_model = jax.random.split(key)
         model, embed_dim = get_ijepa_model(
             model_name,
@@ -291,7 +301,7 @@ def train_ijepa(
         )
         ema_encoder = jax.tree.map(lambda x: x, model.encoder)
         
-        # Optimizer with weight decay + warmup
+        # initialize optimizer
         schedule = optax.warmup_cosine_decay_schedule(
             init_value=0.0,
             peak_value=lr,
@@ -301,8 +311,7 @@ def train_ijepa(
         optimizer = optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
         opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-
-        # Collect hparams for logging
+        # hparams for logging
         hparams = dict(
             data_name=data_name, data_dir=data_dir, img_size=img_size, num_channels=num_channels,
             model_name=model_name, embed_dim=embed_dim, patch_size=patch_size, p_drop=p_drop, seq_len=seq_len,
@@ -320,12 +329,13 @@ def train_ijepa(
             = load_checkpoint(resume)
         embed_dim = hparams['embed_dim']
 
-    
+    # init logging
     if use_aim: 
         run = aim.Run(repo=aim_repo, experiment=run_name)
     if use_wandb:
         wandb.init(project=wandb_project, name=run_name, config=hparams)
 
+    # record random guess at epoch 0
     if eval_interval > 0 and start_epoch==0:
             if use_aim:
                 run.track(1 / num_classes, name="probe_top1", epoch=start_epoch)
@@ -341,13 +351,11 @@ def train_ijepa(
             (model, ema_encoder, opt_state), model_sharding
         )
     
-    
-    # step model
+    # step model prep
     @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, key):
 
         loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, num_pad, key)
-        
         updates, opt_state = optimizer.update(grads, opt_state, model)
 
         model = eqx.apply_updates(model, updates)
@@ -356,8 +364,9 @@ def train_ijepa(
     
     @partial(jax.jit, static_argnums=(1, 2, 3))
     def generate_masks(key, masker, num_pred_masks, batch_size):
-        mask_keys = jax.random.split(key, batch_size)
-        return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
+        with jax.named_scope("generate_masks"):
+            mask_keys = jax.random.split(key, batch_size)
+            return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
 
     # training loop
     step = 0
@@ -367,13 +376,21 @@ def train_ijepa(
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
         for i, (x, _) in enumerate(pbar):  # ignore labels
-            key, mask_key, ema_key, step_key = jax.random.split(key, 4)
+            # profile to check bottlenecks
+            if profile and step == profile_start_step:
+                print(f"profiling started")
+                Path(profile_log_dir).mkdir(parents=True, exist_ok=True)
+                jax.profiler.start_trace(profile_log_dir)
+            if profile and step == profile_end_step:
+                jax.block_until_ready(loss)
+                jax.profiler.stop_trace()
+                print(f"profiling finished, saved to {profile_log_dir}")
+                return
             
-            # generate masks via vmap
+            # data for step
+            key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             mask_ctx, mask_pred = generate_masks(mask_key, masker, num_pred_masks, batch_size)
             
-            # step
-            num_pad = get_num_pad(mask_pred, xla_buckets) # get num pred tokens
             x = jax.device_put(x, data_sharding)
             mask_ctx = jax.device_put(mask_ctx, data_sharding)
             mask_pred = jax.device_put(mask_pred, data_sharding)
@@ -387,18 +404,19 @@ def train_ijepa(
                 print(f"mask_pred: {mask_pred.shape}")
                 print(f"num_pad: {num_pad}")
 
+            # train step
             model, opt_state, loss = step_model(
                 model, opt_state,
                 x, z_ema, mask_ctx, mask_pred,
                 num_pad, step_key
             )
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
-
             assert not jnp.isnan(loss), f"Epoch {epoch+1}/{epochs}:NaN \
                 loss at step {step}"
             
-            epoch_losses.append(loss)
+            # track and log
             step += 1
+            epoch_losses.append(loss)
             
             if step % 100 == 0:
                 if use_aim:
@@ -411,15 +429,12 @@ def train_ijepa(
                     }, 
                         step=step
                     )
-            
             pbar.set_postfix(loss=f"{loss:.4f}")
 
-            
-
-        # Linear probe eval
+        # linear probe eval
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
             key, eval_key = jax.random.split(key)
-            print(f"Running linear probe eval...")
+            print(f"Epoch {epoch+1}/{epochs}: running linear probe eval")
             top1, top5 = eval_probe(
                 encoder=ema_encoder,
                 embed_dim=embed_dim,
