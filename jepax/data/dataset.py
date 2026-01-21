@@ -66,7 +66,7 @@ def build_dataset(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
-        prefetch_factor=8,
+        prefetch_factor=4,
         drop_last=is_train,
         collate_fn=numpy_collate,
     )
