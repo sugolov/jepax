@@ -376,10 +376,9 @@ def train_ijepa(
         epoch_losses = []
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
-        loader_time = None
+        loader_time = time.time()
         for _, (x, _) in enumerate(pbar):  # ignore labels
-            if loader_time is not None:
-                print(f"loader: {time.time() - loader_time:.4f}s")
+            loader_time = time.time() - loader_time
 
             # profile to check bottlenecks
             if profile and step == profile_start_step:
@@ -392,19 +391,19 @@ def train_ijepa(
                 print(f"profiling finished, saved to {profile_log_dir}")
                 return
             
-            mask_time = time.time()
             # data for step
+            mask_time = time.time()
             key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             mask_ctx, mask_pred = generate_masks(mask_key, masker, num_pred_masks, batch_size)
-            print(f"masks: {time.time() - mask_time:.4f}s")
+            mask_time = time.time() - mask_time
             
             x = jax.device_put(x, data_sharding)
             mask_ctx = jax.device_put(mask_ctx, data_sharding)
             mask_pred = jax.device_put(mask_pred, data_sharding)
 
-            ema_time = time.time()
+            target_time = time.time()
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
-            print(f"ema: {time.time() - ema_time:.4f}s")
+            target_time = time.time() - target_time
 
             if step == 0:
                 print(f"x: {x.shape}")
@@ -413,8 +412,8 @@ def train_ijepa(
                 print(f"mask_pred: {mask_pred.shape}")
                 print(f"num_pad: {num_pad}")
 
-            step_time = time.time()
             # train step
+            step_time = time.time()
             model, opt_state, loss = step_model(
                 model, opt_state,
                 x, z_ema, mask_ctx, mask_pred,
@@ -423,7 +422,7 @@ def train_ijepa(
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
             assert not jnp.isnan(loss), f"Epoch {epoch+1}/{epochs}:NaN \
                 loss at step {step}"
-            print(f"step: {time.time() - ema_time:.4f}s")
+            step_time = time.time() - step_time
             
             # track and log
             step += 1
@@ -440,8 +439,13 @@ def train_ijepa(
                     }, 
                         step=step
                     )
-            pbar.set_postfix(loss=f"{loss:.4f}")
-
+            pbar.set_postfix(
+                loss=f"{loss:.4f}", 
+                step_time=f"{step_time:.3f}",
+                loader_time=f"{loader_time:.3f}",
+                target_time=f"{target_time:.3f}",
+                mask_time=f"{mask_time:.3f}"
+            )
             loader_time = time.time()
 
         # linear probe eval
