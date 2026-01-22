@@ -376,7 +376,11 @@ def train_ijepa(
         epoch_losses = []
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
-        for i, (x, _) in enumerate(pbar):  # ignore labels
+        loader_time = None
+        for _, (x, _) in enumerate(pbar):  # ignore labels
+            if loader_time is not None:
+                print(f"loader: {time.time() - loader_time:.4f}s")
+
             # profile to check bottlenecks
             if profile and step == profile_start_step:
                 print(f"profiling started")
@@ -388,15 +392,19 @@ def train_ijepa(
                 print(f"profiling finished, saved to {profile_log_dir}")
                 return
             
+            mask_time = time.time()
             # data for step
             key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             mask_ctx, mask_pred = generate_masks(mask_key, masker, num_pred_masks, batch_size)
+            print(f"masks: {time.time() - mask_time:.4f}s")
             
             x = jax.device_put(x, data_sharding)
             mask_ctx = jax.device_put(mask_ctx, data_sharding)
             mask_pred = jax.device_put(mask_pred, data_sharding)
 
+            ema_time = time.time()
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
+            print(f"ema: {time.time() - ema_time:.4f}s")
 
             if step == 0:
                 print(f"x: {x.shape}")
@@ -405,6 +413,7 @@ def train_ijepa(
                 print(f"mask_pred: {mask_pred.shape}")
                 print(f"num_pad: {num_pad}")
 
+            step_time = time.time()
             # train step
             model, opt_state, loss = step_model(
                 model, opt_state,
@@ -414,6 +423,7 @@ def train_ijepa(
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
             assert not jnp.isnan(loss), f"Epoch {epoch+1}/{epochs}:NaN \
                 loss at step {step}"
+            print(f"step: {time.time() - ema_time:.4f}s")
             
             # track and log
             step += 1
@@ -431,6 +441,8 @@ def train_ijepa(
                         step=step
                     )
             pbar.set_postfix(loss=f"{loss:.4f}")
+
+            loader_time = time.time()
 
         # linear probe eval
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
@@ -478,6 +490,8 @@ def train_ijepa(
             checkpoint_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch+1}")
             save_checkpoint(model, opt_state, epoch + 1, hparams, checkpoint_path)
             print(f"Epoch {epoch+1}/{epochs}: Saved checkpoint to {checkpoint_path}")
+
+        
 
     logf.close()
 
