@@ -17,6 +17,9 @@ jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/pat
 - gpu profile5
 - compute mfu
 - add imnet22k download option
+- increase wd linearly
+- increase momentum linearly
+- DOUBLE CHECK loss and implementation
 
 https://ui.perfetto.dev
 
