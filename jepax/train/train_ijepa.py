@@ -1,5 +1,6 @@
 import os
 import argparse
+from collections import OrderedDict
 from pathlib import Path
 from datetime import datetime
 import time
@@ -439,13 +440,13 @@ def train_ijepa(
                     }, 
                         step=step
                     )
-            pbar.set_postfix(
-                loss=f"{loss:.4f}", 
-                step_time=f"{step_time:.3f}",
-                loader_time=f"{loader_time:.3f}",
-                target_time=f"{target_time:.3f}",
-                mask_time=f"{mask_time:.3f}"
-            )
+            pbar.set_postfix(OrderedDict([
+                ("loss", f"{loss:.3f}"),
+                ("loader_time", f"{loader_time:.3f}"),
+                ("step_time", f"{step_time:.3f}"),
+                ("target_time", f"{target_time:.3f}"),
+                ("mask_time", f"{mask_time:.3f}"),
+            ]))
             loader_time = time.time()
 
         # linear probe eval
