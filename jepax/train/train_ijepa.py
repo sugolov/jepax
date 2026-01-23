@@ -273,8 +273,11 @@ def train_ijepa(
         prefetch_factor=prefetch_factor,
         shuffle=False,
         is_train=True,
+        sharding=(num_devices > 1),
         seed=seed
     )
+    if num_devices > 1:
+        print("loader using sharding")
 
     if eval_interval > 0:
         val_loader, _, _, _ = build_dataloader(
