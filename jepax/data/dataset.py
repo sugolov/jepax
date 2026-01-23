@@ -186,7 +186,8 @@ def build_dataloader(
         worker_count=num_workers,
         worker_buffer_size=prefetch_factor
     )
-    return dataloader, num_classes, len(torch_source) // batch_size, image_size
+    steps_per_epoch = len(torch_source) // batch_size
+    return dataloader, num_classes, steps_per_epoch, image_size
 
 def build_torch_dataloader(
     dataset_name,
