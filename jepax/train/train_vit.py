@@ -13,7 +13,7 @@ import optax
 import aim
 from tqdm import tqdm
 
-from jepax.data import build_dataset
+from jepax.data import build_torch_dataloader
 from jepax.model import get_vit_clf_model
 from jepax.train import save_checkpoint
 
@@ -108,7 +108,7 @@ def train_vit_cifar10(args):
         logf.write("Epoch,Train_Loss,Test_Loss,Test_Acc\n")
 
     # create dataset
-    dataloader, num_classes, n_batch, image_size = build_dataset(
+    dataloader, num_classes, n_batch, image_size = build_torch_dataloader(
         args.data_name,
         args.data_dir,
         batch_size=args.batch_size,
@@ -116,7 +116,7 @@ def train_vit_cifar10(args):
         is_train=True
     )
 
-    test_dataloader, _, _, _ = build_dataset(
+    test_dataloader, _, _, _ = build_torch_dataloader(
         args.data_name,
         args.data_dir,
         batch_size=args.batch_size,

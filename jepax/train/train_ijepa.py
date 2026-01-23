@@ -15,7 +15,7 @@ import optax
 import aim
 from tqdm import tqdm
 
-from jepax.data import build_dataset
+from jepax.data import build_dataloader #build_torch_dataloader
 from jepax.model import get_ijepa_model, IJEPAMasker, IJEPA 
 from jepax.train.eval_ijepa import evaluate_linear_probe
 
@@ -195,6 +195,7 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
 def train_ijepa(
     # misc
     num_workers: int = 4,
+    prefetch_factor: int = 4,
     seed: int = 0,
     resume: str = None,
     xla_buckets: tuple = (64, 128, 192, 256),
@@ -264,18 +265,27 @@ def train_ijepa(
     if not resume: logf.write("Epoch,Avg_Loss\n")
 
     # create dataset and mask collator
-    dataloader, num_classes, steps_per_epoch, img_size = build_dataset(
-        data_name,
-        data_dir,
+    dataloader, num_classes, steps_per_epoch, img_size = build_dataloader(
+        data_name, 
+        data_dir, 
         batch_size=batch_size,
-        num_workers=num_workers,
-        is_train=True
+        num_workers=num_workers, 
+        prefetch_factor=prefetch_factor,
+        shuffle=False,
+        is_train=True,
+        seed=seed
     )
 
     if eval_interval > 0:
-        val_loader, _, _, _ = build_dataset(
-            data_name, data_dir, batch_size=batch_size,
-            num_workers=num_workers, is_train=False
+        val_loader, _, _, _ = build_dataloader(
+            data_name, 
+            data_dir, 
+            batch_size=batch_size,
+            num_workers=num_workers, 
+            prefetch_factor=prefetch_factor,
+            shuffle=False,
+            is_train=False,
+            seed=seed
         )
 
     masker = IJEPAMasker(
@@ -378,7 +388,7 @@ def train_ijepa(
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
         loader_time = time.time()
-        for _, (x, _) in enumerate(pbar):  # ignore labels
+        for _, batch in enumerate(pbar):  # ignore labels
             loader_time = time.time() - loader_time
 
             # profile to check bottlenecks
@@ -398,6 +408,7 @@ def train_ijepa(
             mask_ctx, mask_pred = generate_masks(mask_key, masker, num_pred_masks, batch_size)
             mask_time = time.time() - mask_time
             
+            x = batch["image"]
             x = jax.device_put(x, data_sharding)
             mask_ctx = jax.device_put(mask_ctx, data_sharding)
             mask_pred = jax.device_put(mask_pred, data_sharding)
@@ -442,13 +453,14 @@ def train_ijepa(
                     )
             pbar.set_postfix(OrderedDict([
                 ("loss", f"{loss:.3f}"),
-                ("loader_time", f"{loader_time:.3f}"),
-                ("step_time", f"{step_time:.3f}"),
-                ("target_time", f"{target_time:.3f}"),
-                ("mask_time", f"{mask_time:.3f}"),
+                ("loader_time", f"{loader_time:.3f}s"),
+                ("step_time", f"{step_time:.3f}s"),
+                ("target_time", f"{target_time:.3f}s"),
+                ("mask_time", f"{mask_time:.3f}s"),
             ]))
             loader_time = time.time()
 
+        # end of epoch
         # linear probe eval
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
             key, eval_key = jax.random.split(key)
@@ -472,6 +484,7 @@ def train_ijepa(
             if use_wandb:
                 wandb.log({"probe_top1": top1, "probe_top5": top5, "epoch": epoch})
 
+        # tracking
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         epoch_time = time.time() - time_ep_start
         
@@ -490,7 +503,7 @@ def train_ijepa(
                 step=step
             )
 
-        # Save checkpoint
+        # save checkpoints
         if (epoch + 1) % save_interval == 0:
             checkpoint_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch+1}")
             save_checkpoint(model, opt_state, epoch + 1, hparams, checkpoint_path)
