@@ -388,7 +388,7 @@ def train_ijepa(
     for epoch in range(start_epoch, epochs):
         time_ep_start = time.time()
         epoch_losses = []
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
+        pbar = tqdm(dataloader, total=steps_per_epoch, desc=f"Epoch {epoch+1}/{epochs}")
 
         loader_time = time.time()
         for _, batch in enumerate(pbar):  # ignore labels
