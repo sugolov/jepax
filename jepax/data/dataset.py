@@ -168,9 +168,11 @@ def build_dataloader(
 
     if sharding:
         num_processes = jax.process_count()
+        print(f"num processes: {num_processes}")
         assert batch_size % num_processes == 0, "The batch size must divide number "\
             "of processes"
         batch_size_loader = batch_size // num_processes
+        print(f"batch size loader: {batch_size_loader}")
     else:
         batch_size_loader = batch_size
 
