@@ -166,25 +166,26 @@ def build_dataloader(
     
     torch_source = TorchDataSource(dataset)
 
-    if sharding:
-        num_processes = jax.process_count()
-        print(f"num processes: {num_processes}")
-        assert batch_size % num_processes == 0, "The batch size must divide number "\
-            "of processes"
-        batch_size_loader = batch_size // num_processes
-        print(f"batch size loader: {batch_size_loader}")
-    else:
-        batch_size_loader = batch_size
+    #if sharding:
+    #    num_processes = jax.process_count()
+    #    print(f"num processes: {num_processes}")
+    #    assert batch_size % num_processes == 0, "The batch size must divide number "\
+    #        "of processes"
+    #    batch_size_loader = batch_size // num_processes
+    #    print(f"batch size loader: {batch_size_loader}")
+    #else:
+    #    batch_size_loader = batch_size
 
     dataloader = grain.DataLoader(
         data_source=torch_source,
         sampler=grain.IndexSampler(
             len(torch_source), 
             shuffle=shuffle, 
-            shard_options=grain.ShardByJaxProcess() if sharding else grain.NoSharding(),
+            shard_options=grain.NoSharding(),#grain.ShardByJaxProcess() if sharding else grain.NoSharding(),
             seed=seed,
+            num_epochs=1
         ),
-        operations=transforms + [grain.Batch(batch_size=batch_size_loader, drop_remainder=is_train)],
+        operations=transforms + [grain.Batch(batch_size=batch_size, drop_remainder=is_train)],
         worker_count=num_workers,
         worker_buffer_size=prefetch_factor
     )
