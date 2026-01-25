@@ -79,10 +79,16 @@ def parse_args():
     p.add_argument("--ctx_aspect", type=float, default=1.0)
     
     # eval
+    p.add_argument("--n_concat", type=int, default=4)
     p.add_argument("--eval_interval", type=int, default=10)
-    p.add_argument("--eval_epochs", type=int, default=20)
-    p.add_argument("--eval_train_samples", type=int, default=10000)
-    p.add_argument("--eval_val_samples", type=int, default=5000)
+    p.add_argument("--eval_train_samples", type=int, default=None)
+    p.add_argument("--eval_val_samples", type=int, default=None)
+    p.add_argument("--eval_epochs", type=int, default=50)
+    p.add_argument("--eval_batch_size", type=int, default=4096)
+    p.add_argument("--eval_optim", type=str, default="adam", choices=["adam", "lars", "sgd"])
+    p.add_argument("--eval_weight_decay", type=float, default=5e-4)
+    p.add_argument("--eval_lr", type=float, default=1e-2)
+
 
     return p.parse_args()
 
@@ -130,6 +136,7 @@ def load_checkpoint(path):
     return model, ema_encoder, optimizer, opt_state, checkpoint['epoch'], hparams
 
 def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
+               batch_size, n_concat, optim="adam", weight_decay=5e-4, lr=5e-2,
                max_train_samples=None, max_val_samples=None, n_epochs=20):
     """Run linear probe evaluation."""
     eval_result = evaluate_linear_probe(
@@ -138,10 +145,15 @@ def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
         train_loader=train_loader,
         val_loader=val_loader,
         num_classes=num_classes,
+        batch_size=batch_size,
+        optim=optim,
         key=key,
+        lr=lr,
+        n_concat=n_concat,
         n_epochs=n_epochs,
         max_train_samples=max_train_samples,
         max_val_samples=max_val_samples,
+        weight_decay=weight_decay
     )
 
     log_result = {}
@@ -245,6 +257,10 @@ def train_ijepa(
     eval_train_samples: int = None, # on entire dataset
     eval_val_samples: int = None,
     eval_epochs: int = 50,
+    eval_batch_size: int = 4096,
+    eval_optim: str = "adam",
+    eval_weight_decay: float = 5e-4,
+    eval_lr: float = 1e-2,
     # profiling
     profile: bool = False,
     profile_start_step: int = 10,
@@ -489,6 +505,10 @@ def train_ijepa(
                 max_val_samples=eval_val_samples,
                 n_concat=n_concat,
                 n_epochs=eval_epochs,
+                batch_size=eval_batch_size,
+                optim=eval_optim,
+                weight_decay=eval_weight_decay,
+                lr=eval_lr
             )
             top1, top5 = eval_result["best"]
             print(f"Epoch {epoch+1}/{epochs}: max top1 {top1*100:.2f}%, max top5 {top5*100:.2f}%")
@@ -523,8 +543,6 @@ def train_ijepa(
             checkpoint_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch+1}")
             save_checkpoint(model, opt_state, epoch + 1, hparams, checkpoint_path)
             print(f"Epoch {epoch+1}/{epochs}: Saved checkpoint to {checkpoint_path}")
-
-        
 
     logf.close()
 

@@ -21,7 +21,7 @@ class LinearProbe(eqx.Module):
 
 
 @eqx.filter_jit
-def get_representations(encoder, images, key, n_concat=1):
+def get_representations(encoder, images, key, *, n_concat=1):
     """Get mean-pooled representations for a batch of images."""
     keys = jax.random.split(key, images.shape[0])
 
@@ -90,11 +90,19 @@ def linear_probe_step(probe, optimizer, opt_state, reps, labels):
 
 def train_and_eval_probe(
     train_reps, train_labels, val_reps, val_labels,
-    input_dim, num_classes, key, n_epochs, lr, batch_size, verbose=False
+    input_dim, num_classes, key, n_epochs, lr, batch_size, optim="adam", 
+    weight_decay=5e-4, verbose=False
 ):
     """Train a single linear probe and return (top1, top5)."""
     probe = LinearProbe(input_dim, num_classes, key=key)
-    optimizer = optax.adam(lr)
+
+    if optim.lower() in ["adam", "adamw"]:
+        optimizer = optax.adamw(lr, weight_decay=weight_decay)
+    elif optim.lower() == "lars":
+        optimizer = optax.lars(lr, weight_decay=weight_decay)
+    else:
+        optimizer = optax.sgd(lr)
+
     opt_state = optimizer.init(eqx.filter(probe, eqx.is_array))
     
     n_train = len(train_reps)
@@ -130,6 +138,8 @@ def evaluate_linear_probe(
     n_epochs=50,
     lr=0.01,
     batch_size=512,
+    optim = "adam",
+    weight_decay = 5e-4,
     max_train_samples=None,
     max_val_samples=None,
     verbose=True,
@@ -156,7 +166,8 @@ def evaluate_linear_probe(
         print("Probe: training last-layer probe")
     top1_last, top5_last = train_and_eval_probe(
         train_last, train_labels, val_last, val_labels,
-        embed_dim, num_classes, k3, n_epochs, lr, batch_size, verbose
+        embed_dim, num_classes, k3, n_epochs, lr, batch_size, 
+        optim=optim, weight_decay=weight_decay, verbose=verbose
     )
     
     result = {
@@ -169,7 +180,8 @@ def evaluate_linear_probe(
             print(f"Probe: training concat-{n_concat} probe")
         top1_concat, top5_concat = train_and_eval_probe(
             train_concat, train_labels, val_concat, val_labels,
-            embed_dim * n_concat, num_classes, k4, n_epochs, lr, batch_size, verbose
+            embed_dim * n_concat, num_classes, k4, n_epochs, lr, batch_size,
+            optim=optim, weight_decay=weight_decay, verbose=verbose
         )
         result["concat"] = (top1_concat, top5_concat)
         result["best"] = (max(top1_last, top1_concat), max(top5_last, top5_concat))
