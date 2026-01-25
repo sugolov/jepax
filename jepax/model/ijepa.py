@@ -125,44 +125,6 @@ def get_ijepa_model(
     
     return IJEPA(encoder=encoder, predictor=predictor), enc_config["dim"]
 
-
-# Convenience for custom encoder/predictor combos
-def get_ijepa_model_custom(
-    enc_name: str,
-    pred_name: str,
-    *,
-    key: PRNGKeyArray,
-    num_channels: int = 3,
-    patch_size: int = 16,
-    img_size: int = 224,
-    p_drop: float = 0.0,
-    seq_len: int = 256,
-):
-    k1, k2 = jax.random.split(key)
-    grid_size = img_size // patch_size
-    
-    enc_config = get_encoder_config(
-        enc_name,
-        num_channels=num_channels,
-        patch_size=patch_size,
-        img_size=img_size,
-        p_drop=p_drop,
-        seq_len=seq_len,
-    )
-    
-    pred_config = get_predictor_config(
-        pred_name,
-        enc_dim=enc_config["dim"],
-        grid_size=grid_size,
-        p_drop=p_drop,
-        seq_len=seq_len,
-    )
-    
-    encoder = IJEPAEncoder(**enc_config, key=k1)
-    predictor = IJEPAPredictor(**pred_config, key=k2)
-    
-    return IJEPA(encoder=encoder, predictor=predictor)
-
 class IJEPAEncoder(eqx.Module):
     embed: PatchEmbedding
     transformer: Transformer
