@@ -13,13 +13,13 @@ jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/pat
 - think about sharding predictor to a different gpu
 - initialize vit weights correctly
 - triple check configs with ijepa paper
-- add gradient checkpointing
 - gpu profile5
 - compute mfu
 - add imnet22k download option
 - increase wd linearly
 - increase momentum linearly
 - DOUBLE CHECK loss and implementation
+- linear eval on last 4 layers and last layer
 
 https://ui.perfetto.dev
 

@@ -3,3 +3,9 @@
 __pycache__
 slurm
 *.DS_Store
+
+jepax/train/.logs/
+jepax/train/.checkpoints/
+jepax/train/.data/
+jepax/train/train_test.sh
+jepax/train/wandb/
