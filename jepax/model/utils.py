@@ -32,18 +32,9 @@ def rescale_linear_weight(model, scale):
     new_weights = [weight * scale for weight in weights]
     return eqx.tree_at(get_weights, model, new_weights)
     
-
 def init_depth_weights(layers):
     scales = 1 / jnp.arange(1, len(layers)+1)
-    
-
-
-    weights = get_weights(model)
-
-    new_weights = [init_fn(weight, subkey) 
-                    for weight, subkey in zip(weights, jax.random.split(key, len(weights)))]
-    new_model = eqx.tree_at(get_weights, model, new_weights)
-    return new_model
+    return jax.vmap(rescale_linear_weight)(layers, scales)
 
 def init_layernorm(model):
     is_layernorm = lambda x: isinstance(x, eqx.nn.LayerNorm)
