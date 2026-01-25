@@ -132,7 +132,7 @@ def load_checkpoint(path):
 def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
                max_train_samples=None, max_val_samples=None, n_epochs=20):
     """Run linear probe evaluation."""
-    top1, top5 = evaluate_linear_probe(
+    eval_result = evaluate_linear_probe(
         encoder=encoder,
         embed_dim=embed_dim,
         train_loader=train_loader,
@@ -143,7 +143,13 @@ def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
         max_train_samples=max_train_samples,
         max_val_samples=max_val_samples,
     )
-    return top1, top5
+
+    log_result = {}
+    for k, (top1, top5) in eval_result.items():
+        log_result[f"{k}_top1"] = top1
+        log_result[f"{k}_top5"] = top5
+    
+    return eval_result, log_result
 
 def get_num_pad(mask_pred, buckets=None):
     if buckets is None:
@@ -234,10 +240,11 @@ def train_ijepa(
     save_interval: int = 10,
     print_interval: int = 1,
     # eval
+    n_concat: int = 4,
     eval_interval: int = 10,
-    eval_train_samples: int = 10000,
-    eval_val_samples: int = 5000,
-    eval_epochs: int = 20,
+    eval_train_samples: int = None, # on entire dataset
+    eval_val_samples: int = None,
+    eval_epochs: int = 50,
     # profiling
     profile: bool = False,
     profile_start_step: int = 10,
@@ -351,15 +358,18 @@ def train_ijepa(
         wandb.init(project=wandb_project, name=run_name, config=hparams)
 
     # record random guess at epoch 0
-    if eval_interval > 0 and start_epoch==0:
-            if use_aim:
-                run.track(1 / num_classes, name="probe_top1", epoch=start_epoch)
-                run.track(5 / num_classes, name="probe_top5", epoch=start_epoch)
-            if use_wandb:
-                wandb.log({
-                    "probe_top1": 1 / num_classes, 
-                    "probe_top5": 5 / num_classes, 
-                    "epoch": start_epoch})
+    if eval_interval > 0 and start_epoch == 0:
+        random_top1 = 1 / num_classes
+        random_top5 = min(5 / num_classes, 1.0)
+        if use_aim:
+            run.track(random_top1, name="best_top1", epoch=start_epoch)
+            run.track(random_top5, name="best_top5", epoch=start_epoch)
+        if use_wandb:
+            wandb.log({
+                "best_top1": random_top1,
+                "best_top5": random_top5,
+                "epoch": start_epoch,
+            })
     
     # shard model
     model, ema_encoder, opt_state = eqx.filter_shard(
@@ -468,7 +478,7 @@ def train_ijepa(
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
             key, eval_key = jax.random.split(key)
             print(f"Epoch {epoch+1}/{epochs}: running linear probe eval")
-            top1, top5 = eval_probe(
+            eval_result, log_result = eval_probe(
                 encoder=ema_encoder,
                 embed_dim=embed_dim,
                 train_loader=dataloader,
@@ -477,15 +487,17 @@ def train_ijepa(
                 key=eval_key,
                 max_train_samples=eval_train_samples,
                 max_val_samples=eval_val_samples,
+                n_concat=n_concat,
                 n_epochs=eval_epochs,
             )
-            print(f"Epoch {epoch+1}/{epochs}: top1 {top1*100:.2f}%, top5 {top5*100:.2f}%")
+            top1, top5 = eval_result["best"]
+            print(f"Epoch {epoch+1}/{epochs}: max top1 {top1*100:.2f}%, max top5 {top5*100:.2f}%")
             
             if use_aim:
                 run.track(top1, name="probe_top1", epoch=epoch)
                 run.track(top5, name="probe_top5", epoch=epoch)
             if use_wandb:
-                wandb.log({"probe_top1": top1, "probe_top5": top5, "epoch": epoch})
+                wandb.log({**log_result, "epoch": epoch})
 
         # tracking
         avg_loss = sum(epoch_losses) / len(epoch_losses)

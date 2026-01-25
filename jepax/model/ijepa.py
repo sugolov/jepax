@@ -95,7 +95,7 @@ def get_ijepa_model(
     num_channels: int = 3,
     patch_size: int = 16,
     img_size: int = 224,
-    p_drop: float = 0.0,
+    p_drop: float = 0.1,
     seq_len: int = 256,
 ):
     enc_name, pred_name = get_ijepa_config(name)
@@ -200,15 +200,20 @@ class IJEPAEncoder(eqx.Module):
         self.mask_token = jax.random.normal(k3, (1, dim))
 
 
-    def __call__(self, key, x, mask=None, train=True):
+    def __call__(self, key, x, mask=None, train=True, get_intermediates=False):
         x = self.embed(x)
 
         if mask is not None:
             x = set_token_mask(x, mask, self.mask_token)
 
-        x = self.transformer(x, key=key, train=train)
-        
-        return x
+
+        out = self.transformer(
+            x, key=key, 
+            train=train, 
+            get_intermediates=get_intermediates
+        )
+        # returns a list of intermediates if get_intermediates is true
+        return out
     
 class IJEPAPredictor(eqx.Module):
     in_proj: eqx.nn.Linear

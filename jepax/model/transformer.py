@@ -231,10 +231,9 @@ class Transformer(eqx.Module):
             )
 
     def __call__(self, x, attn_mask: Optional[Array] = None, *, 
-                 key: Optional[PRNGKeyArray] = None, use_pe: bool = True, train: bool = True):
+                 key: Optional[PRNGKeyArray] = None, use_pe: bool = True, train: bool = True,
+                 get_intermediates=False):
         """
-        TODO: stochastic depth
-
         Args:
             x (_type_): _description_
             key (Optional[PRNGKeyArray], optional): _description_. Defaults to None.
@@ -251,8 +250,17 @@ class Transformer(eqx.Module):
             keys = jax.random.split(key, len(self.blocks))
         else:
             keys = [None] * len(self.blocks)
+
+        # after positional encoding
+        intermediates = [x] if get_intermediates else None
         
         for block, k in zip(self.blocks, keys):
             x = block(x, key=k, train=train, attn_mask=attn_mask)
+
+            if intermediates is not None: 
+                intermediates += [x]
+        
+        if intermediates is not None:
+            return x, intermediates
         
         return x
