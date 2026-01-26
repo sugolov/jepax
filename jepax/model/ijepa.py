@@ -13,6 +13,8 @@ from jepax.model.masker import set_token_mask
 from jepax.model.transformer import Transformer, PositionalEncoding, PositionalEncoding2D
 from jepax.model.vit import PatchEmbedding
 
+from jepax.model.utils import init_linear_weight
+
 # Encoder configs (same as ViT)
 ijepa_encoder_configs = {
     "vit-ti": {"dim": 192, "num_layers": 12, "num_head": 3, "mlp_ratio": 4.0},
@@ -122,6 +124,8 @@ def get_ijepa_model(
     
     encoder = IJEPAEncoder(**enc_config, key=k1)
     predictor = IJEPAPredictor(**pred_config, key=k2)
+    model = IJEPA(encoder=encoder, predictor=predictor)
+    # model = init_linear_weight(model, t)
     
     return IJEPA(encoder=encoder, predictor=predictor), enc_config["dim"]
 

@@ -27,6 +27,7 @@ def parse_args():
     # misc
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--prefetch_factor", type=int, default=4)
     p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
     p.add_argument("--resume", type=str, default=None)
 
@@ -43,7 +44,6 @@ def parse_args():
     # model
     p.add_argument("--model_name", type=str, default="ijepa-test",
                    choices=["ijepa-ti", "ijepa-s", "ijepa-b", "ijepa-l", "ijepa-h", "ijepa-test"])
-    
     # logging/checkpointing
     p.add_argument("--save_dir", type=str, default=".checkpoints")
     p.add_argument("--use_wandb", action="store_true")
@@ -64,7 +64,8 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=300)
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--weight_decay", type=float, default=0.05)
+    p.add_argument("--weight_decay", type=float, default=0.04)
+    p.add_argument("--final_weight_decay", type=float, default=0.4) 
     p.add_argument("--warmup_epochs", type=int, default=10)
     
     # ema
@@ -92,12 +93,13 @@ def parse_args():
 
     return p.parse_args()
 
-def save_checkpoint(model, opt_state, epoch, hparams, path):
+def save_checkpoint(model, ema_encoder, opt_state, epoch, hparams, path):
     import json
     if hasattr(hparams, '__dict__'):
         hparams = vars(hparams)
     
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
+    eqx.tree_serialise_leaves(path + "_ema_enc.eqx", ema_encoder)
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
     
     with open(path + "_meta.json", "w") as f:
@@ -121,19 +123,30 @@ def load_checkpoint(path):
         seq_len=hparams['seq_len'],
     )
     model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
-    ema_encoder = jax.tree.map(lambda x: x, model.encoder)
+    ema_encoder = eqx.tree_deserialise_leaves(path + "_ema_enc.eqx", model.encoder)
     
-    schedule = optax.warmup_cosine_decay_schedule(
+    lr_schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=hparams['lr'],
         warmup_steps=hparams['warmup_epochs'] * hparams['steps_per_epoch'],
         decay_steps=hparams['epochs'] * hparams['steps_per_epoch'],
     )
-    optimizer = optax.adamw(learning_rate=schedule, weight_decay=hparams['weight_decay'])
+
+    if hparams['final_weight_decay'] is None:
+        wd_schedule = lambda _: hparams['weight_decay']
+    else:
+        wd_schedule = optax.linear_schedule(
+            init_value=hparams['weight_decay'],
+            end_value=hparams['final_weight_decay'],
+            transition_steps=hparams['epochs'] * hparams['steps_per_epoch']
+        )
+
+    optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=wd_schedule)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
     
-    return model, ema_encoder, optimizer, opt_state, checkpoint['epoch'], hparams
+    return model, ema_encoder, optimizer, opt_state, checkpoint['epoch'], \
+         lr_schedule, wd_schedule, hparams
 
 def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
                batch_size, n_concat, optim="adam", weight_decay=5e-4, lr=5e-2,
@@ -241,7 +254,8 @@ def train_ijepa(
     epochs: int = 300,
     batch_size: int = 64,
     lr: float = 1e-4,
-    weight_decay: float = 0.05,
+    weight_decay: float = 0.04,
+    final_weight_decay: float = 0.4,
     warmup_epochs: int = 10,
     # logging/checkpointing
     save_dir: str = ".checkpoints",
@@ -340,13 +354,26 @@ def train_ijepa(
         ema_encoder = jax.tree.map(lambda x: x, model.encoder)
         
         # initialize optimizer
-        schedule = optax.warmup_cosine_decay_schedule(
+        lr_schedule = optax.warmup_cosine_decay_schedule(
             init_value=0.0,
             peak_value=lr,
             warmup_steps=warmup_epochs * steps_per_epoch,
             decay_steps=epochs * steps_per_epoch,
         )
-        optimizer = optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
+
+        if final_weight_decay is None:
+            wd_schedule = lambda _: weight_decay
+        else:
+            wd_schedule = optax.linear_schedule(
+                init_value=weight_decay,
+                end_value=final_weight_decay,
+                transition_steps=epochs * steps_per_epoch,
+            )
+    
+        optimizer = optax.adamw(
+            learning_rate=lr_schedule, 
+            weight_decay=wd_schedule
+        )
         opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
         # hparams for logging
@@ -355,7 +382,7 @@ def train_ijepa(
             model_name=model_name, embed_dim=embed_dim, patch_size=patch_size, p_drop=p_drop, seq_len=seq_len,
             num_pred_masks=num_pred_masks, num_pad=num_pad, pred_scale=pred_scale, ctx_scale=ctx_scale,
             ema_decay=ema_decay, tag=tag, epochs=epochs, batch_size=batch_size,
-            steps_per_epoch=steps_per_epoch, lr=lr, weight_decay=weight_decay, 
+            steps_per_epoch=steps_per_epoch, lr=lr, weight_decay=weight_decay, final_weight_decay=final_weight_decay,
             warmup_epochs=warmup_epochs, save_dir=save_dir,
             aim_repo=aim_repo, save_interval=save_interval, print_interval=print_interval,
             num_workers=num_workers, seed=seed, resume=resume,
@@ -363,8 +390,8 @@ def train_ijepa(
 
         start_epoch = 0
     else:
-        model, ema_encoder, optimizer, opt_state, start_epoch, hparams \
-            = load_checkpoint(resume)
+        model, ema_encoder, optimizer, opt_state, start_epoch, lr_schedule, \
+            wd_schedule, hparams = load_checkpoint(resume)
         embed_dim = hparams['embed_dim']
 
     # init logging
@@ -410,7 +437,8 @@ def train_ijepa(
             return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
 
     # training loop
-    step = 0
+    step = start_epoch * steps_per_epoch
+
     for epoch in range(start_epoch, epochs):
         time_ep_start = time.time()
         epoch_losses = []
@@ -476,7 +504,8 @@ def train_ijepa(
                     wandb.log({
                         "loss": loss.item(), 
                         "epoch": epoch,
-                        "lr": lr,
+                        "lr": float(lr_schedule(step)),
+                        "wd": float(wd_schedule(step))
                     }, 
                         step=step
                     )
@@ -517,7 +546,7 @@ def train_ijepa(
                 run.track(top1, name="probe_top1", epoch=epoch)
                 run.track(top5, name="probe_top5", epoch=epoch)
             if use_wandb:
-                wandb.log({**log_result, "epoch": epoch})
+                wandb.log({**log_result, "epoch": epoch}, step=step)
 
         # tracking
         avg_loss = sum(epoch_losses) / len(epoch_losses)
@@ -541,7 +570,7 @@ def train_ijepa(
         # save checkpoints
         if (epoch + 1) % save_interval == 0:
             checkpoint_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch+1}")
-            save_checkpoint(model, opt_state, epoch + 1, hparams, checkpoint_path)
+            save_checkpoint(model, ema_encoder, opt_state, epoch + 1, hparams, checkpoint_path)
             print(f"Epoch {epoch+1}/{epochs}: Saved checkpoint to {checkpoint_path}")
 
     logf.close()
