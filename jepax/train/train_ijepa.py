@@ -30,11 +30,13 @@ def parse_args():
     p.add_argument("--prefetch_factor", type=int, default=4)
     p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
     p.add_argument("--resume", type=str, default=None)
-    # profiling
+    p.add_argument("--bfloat16", action="store_true")
+    # profiling / testing
     p.add_argument("--profile", action="store_true")
     p.add_argument("--profile_start_step", type=int, default=10)
     p.add_argument("--profile_end_step", type=int, default=60)
     p.add_argument("--profile_log_dir", type=str, default=".logs")
+    p.add_argument("--skip_epoch", action="store_true")
     # data
     p.add_argument("--data_name", type=str, default="cifar10")
     p.add_argument("--data_dir", type=str, default=".data")
@@ -103,7 +105,7 @@ def load_checkpoint(path):
     
     hparams = checkpoint['args']
     
-    model = get_ijepa_model(
+    model, _ = get_ijepa_model(
         hparams['model_name'],
         key=jax.random.PRNGKey(hparams['seed']),
         num_channels=hparams['num_channels'],
@@ -137,6 +139,11 @@ def load_checkpoint(path):
     
     return model, ema_encoder, optimizer, opt_state, checkpoint['epoch'], \
          lr_schedule, wd_schedule, hparams
+
+def to_bf16(x):
+    if eqx.is_array(x) and jnp.issubdtype(x.dtype, jnp.floating):
+        return x.astype(jnp.bfloat16)
+    return x
 
 def eval_probe(encoder, embed_dim, train_loader, val_loader, num_classes, key,
                batch_size, n_concat, optim="adam", weight_decay=5e-4, lr=5e-2,
@@ -208,18 +215,23 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
     safe_idx = jnp.where(valid, mask_idx, 0)  # avoid OOB indexing
     target = jax.vmap(lambda z, idx: z[idx])(z_ema, safe_idx)  # (B, num_pad, D)
 
+    target = target.astype(jnp.float32)
+    z_pred = z_pred.astype(jnp.float32)
+
     mse = jnp.sum((target - z_pred) ** 2, axis=-1)  # (B, num_pad)
     loss = jnp.sum(mse * valid) / jnp.sum(valid)  # only count valid positions
     
     return loss
 
 def train_ijepa(
+    args: dict,
     # misc
     num_workers: int = 4,
     prefetch_factor: int = 4,
     seed: int = 0,
     resume: str = None,
     xla_buckets: tuple = (64, 128, 192, 256),
+    bfloat16: bool = False,
     # data
     data_name: str = "cifar10",
     data_dir: str = ".data",
@@ -270,6 +282,7 @@ def train_ijepa(
     profile_start_step: int = 10,
     profile_end_step: int = 60,
     profile_log_dir: str = ".logs/profile",
+    skip_epoch: bool = False,
 ):
     # setup
     key = jax.random.PRNGKey(seed)
@@ -286,6 +299,8 @@ def train_ijepa(
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
     run_name = f"{model_name}-{data_name.lower()}"
+    if bfloat16:
+        run_name += "-bf16"
     run_name = f"{run_name}-{tag}" if tag else run_name
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "a" if resume else "w")
@@ -366,23 +381,23 @@ def train_ijepa(
         )
         opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-        # hparams for logging
-        hparams = dict(
-            data_name=data_name, data_dir=data_dir, img_size=img_size, num_channels=num_channels,
-            model_name=model_name, embed_dim=embed_dim, patch_size=patch_size, p_drop=p_drop, seq_len=seq_len,
-            num_pred_masks=num_pred_masks, num_pad=num_pad, pred_scale=pred_scale, ctx_scale=ctx_scale,
-            ema_decay=ema_decay, tag=tag, epochs=epochs, batch_size=batch_size,
-            steps_per_epoch=steps_per_epoch, lr=lr, weight_decay=weight_decay, final_weight_decay=final_weight_decay,
-            warmup_epochs=warmup_epochs, save_dir=save_dir,
-            aim_repo=aim_repo, save_interval=save_interval, print_interval=print_interval,
-            num_workers=num_workers, seed=seed, resume=resume,
-        )
+        hparams = args.copy()
+        hparams.update({
+            'img_size': img_size,
+            'embed_dim': embed_dim,
+            'steps_per_epoch': steps_per_epoch,
+        })
 
         start_epoch = 0
     else:
         model, ema_encoder, optimizer, opt_state, start_epoch, lr_schedule, \
             wd_schedule, hparams = load_checkpoint(resume)
-        embed_dim = hparams['embed_dim']
+        embed_dim = hparams.get('embed_dim')
+        bfloat16 = hparams.get('bfloat16', False)
+
+    if bfloat16:
+        model = jax.tree.map(to_bf16, model)
+        ema_encoder = jax.tree.map(to_bf16, ema_encoder)
 
     # init logging
     if use_aim: 
@@ -456,7 +471,9 @@ def train_ijepa(
             mask_time = time.time() - mask_time
             
             x = batch["image"]
+            x = x.astype(jnp.bfloat16) if bfloat16 else x
             x = jax.device_put(x, data_sharding)
+
             mask_ctx = jax.device_put(mask_ctx, data_sharding)
             mask_pred = jax.device_put(mask_pred, data_sharding)
 
@@ -464,9 +481,12 @@ def train_ijepa(
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
             target_time = time.time() - target_time
 
-            if step == 0:
-                print(f"x: {x.shape}")
-                print(f"z_ema: {z_ema.shape}")
+            z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
+
+            if step == start_epoch * steps_per_epoch:
+                print(f"model dtype: {jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype}")
+                print(f"x: {x.shape}, dtype: {x.dtype}")
+                print(f"z_ema: {z_ema.shape}, dtype: {z_ema.dtype}")
                 print(f"mask_ctx: {mask_ctx.shape}")
                 print(f"mask_pred: {mask_pred.shape}")
                 print(f"num_pad: {num_pad}")
@@ -508,8 +528,12 @@ def train_ijepa(
             ]))
             loader_time = time.time()
 
+            if skip_epoch:
+                break
+
         # end of epoch
         # linear probe eval
+
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
             key, eval_key = jax.random.split(key)
             print(f"Epoch {epoch+1}/{epochs}: running linear probe eval")
@@ -568,4 +592,4 @@ def train_ijepa(
 
 if __name__ == "__main__":
     args = parse_args()
-    train_ijepa(**vars(args))
+    train_ijepa(args=vars(args), **vars(args))
