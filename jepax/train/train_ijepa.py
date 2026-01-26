@@ -30,17 +30,14 @@ def parse_args():
     p.add_argument("--prefetch_factor", type=int, default=4)
     p.add_argument("--xla_buckets", type=int, nargs="+", default=[64, 128, 192, 256])
     p.add_argument("--resume", type=str, default=None)
-
     # profiling
     p.add_argument("--profile", action="store_true")
     p.add_argument("--profile_start_step", type=int, default=10)
     p.add_argument("--profile_end_step", type=int, default=60)
     p.add_argument("--profile_log_dir", type=str, default=".logs")
-
     # data
     p.add_argument("--data_name", type=str, default="cifar10")
     p.add_argument("--data_dir", type=str, default=".data")
-    
     # model
     p.add_argument("--model_name", type=str, default="ijepa-test",
                    choices=["ijepa-ti", "ijepa-s", "ijepa-b", "ijepa-l", "ijepa-h", "ijepa-test"])
@@ -53,13 +50,11 @@ def parse_args():
     p.add_argument("--save_interval", type=int, default=10)
     p.add_argument("--print_interval", type=int, default=1)
     p.add_argument("--tag", type=str, default=None)
-    
     # model architecture
     p.add_argument("--patch_size", type=int, default=4)
     p.add_argument("--seq_len", type=int, default=256)
     p.add_argument("--num_channels", type=int, default=3)
     p.add_argument("--p_drop", type=float, default=0.0)
-    
     # training
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=300)
@@ -67,10 +62,8 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.04)
     p.add_argument("--final_weight_decay", type=float, default=0.4) 
     p.add_argument("--warmup_epochs", type=int, default=10)
-    
     # ema
     p.add_argument("--ema_decay", type=float, default=0.996)
-    
     # masking
     p.add_argument("--num_pred_masks", type=int, default=4)
     p.add_argument("--num_pad", type=int, default=64)
@@ -78,7 +71,6 @@ def parse_args():
     p.add_argument("--pred_aspect", type=float, nargs=2, default=[0.75, 1.5])
     p.add_argument("--ctx_scale", type=float, nargs=2, default=[0.85, 1.0])
     p.add_argument("--ctx_aspect", type=float, default=1.0)
-    
     # eval
     p.add_argument("--n_concat", type=int, default=4)
     p.add_argument("--eval_interval", type=int, default=10)
@@ -89,8 +81,6 @@ def parse_args():
     p.add_argument("--eval_optim", type=str, default="adam", choices=["adam", "lars", "sgd"])
     p.add_argument("--eval_weight_decay", type=float, default=5e-4)
     p.add_argument("--eval_lr", type=float, default=1e-2)
-
-
     return p.parse_args()
 
 def save_checkpoint(model, ema_encoder, opt_state, epoch, hparams, path):

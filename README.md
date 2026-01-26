@@ -81,3 +81,7 @@ Requires Python >= 3.10.
 - [Original PyTorch I-JEPA](https://github.com/facebookresearch/ijepa)
 - [Original PyTorch V-JEPA](https://github.com/facebookresearch/jepa)
 - [Yann LeCun's position paper](https://openreview.net/pdf?id=BZ5a1r-kVsf)
+
+## Cites
+
+- [MPX](https://arxiv.org/pdf/2507.03312)
