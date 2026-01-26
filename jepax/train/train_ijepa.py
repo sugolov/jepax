@@ -36,7 +36,7 @@ def parse_args():
     p.add_argument("--profile_start_step", type=int, default=10)
     p.add_argument("--profile_end_step", type=int, default=60)
     p.add_argument("--profile_log_dir", type=str, default=".logs")
-    p.add_argument("--skip_epoch", action="store_true")
+    p.add_argument("--skip_epoch", type=int, default=None)
     # data
     p.add_argument("--data_name", type=str, default="cifar10")
     p.add_argument("--data_dir", type=str, default=".data")
@@ -282,7 +282,7 @@ def train_ijepa(
     profile_start_step: int = 10,
     profile_end_step: int = 60,
     profile_log_dir: str = ".logs/profile",
-    skip_epoch: bool = False,
+    skip_epoch: int = None,
 ):
     # setup
     key = jax.random.PRNGKey(seed)
@@ -528,15 +528,18 @@ def train_ijepa(
             ]))
             loader_time = time.time()
 
-            if skip_epoch:
+            if skip_epoch is not None and step == skip_epoch:
                 break
 
         # end of epoch
         # linear probe eval
 
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
+            probe_time = time.time()
             key, eval_key = jax.random.split(key)
-            print(f"Epoch {epoch+1}/{epochs}: running linear probe eval")
+            print(f"Epoch {epoch+1}/{epochs}: linear probe eval," \
+                    f"{eval_train_samples or 'all'} train, {eval_val_samples or 'all'} val"
+                  )
             eval_result, log_result = eval_probe(
                 encoder=ema_encoder,
                 embed_dim=embed_dim,
@@ -553,8 +556,11 @@ def train_ijepa(
                 weight_decay=eval_weight_decay,
                 lr=eval_lr
             )
+            probe_time = time.time() - probe_time
             top1, top5 = eval_result["best"]
-            print(f"Epoch {epoch+1}/{epochs}: max top1 {top1*100:.2f}%, max top5 {top5*100:.2f}%")
+            print(f"Epoch {epoch+1}/{epochs}: max top1 {top1*100:.2f}%, max top5 {top5*100:.2f}%" \
+                    f"probe time {probe_time:.3f}s"
+                )
             
             if use_aim:
                 run.track(top1, name="probe_top1", epoch=epoch)
