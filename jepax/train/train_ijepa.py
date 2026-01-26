@@ -453,9 +453,9 @@ def train_ijepa(
         epoch_losses = []
         pbar = tqdm(dataloader, total=steps_per_epoch, desc=f"Epoch {epoch+1}/{epochs}")
 
-        loader_time = time.time()
+        load_time = time.time()
         for _, batch in enumerate(pbar):  # ignore labels
-            loader_time = time.time() - loader_time
+            load_time = time.time() - load_time
 
             # profile to check bottlenecks
             if profile and step == profile_start_step:
@@ -485,7 +485,7 @@ def train_ijepa(
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
             target_time = time.time() - target_time
 
-            #z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
+            z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
 
             if step == start_epoch * steps_per_epoch:
                 print(f"model dtype: {jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype}")
@@ -525,12 +525,12 @@ def train_ijepa(
                     )
             pbar.set_postfix(OrderedDict([
                 ("loss", f"{loss:.3f}"),
-                ("load_time", f"{loader_time:.3f}s"),
+                ("load_time", f"{load_time:.3f}s"),
                 ("step_time", f"{step_time:.3f}s"),
                 ("target_time", f"{target_time:.3f}s"),
                 ("mask_time", f"{mask_time:.3f}s"),
             ]))
-            loader_time = time.time()
+            load_time = time.time()
 
             if skip_epoch is not None and step == skip_epoch:
                 break
