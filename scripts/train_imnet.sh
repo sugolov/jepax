@@ -4,9 +4,11 @@ python -m jepax.train.train_ijepa \
     --seed 0 \
     --num_workers 8 \
     --xla_buckets 64 128 192 256 \
+    --num_pad 64 \
     --data_name imnet \
     --data_dir ~/data/imagenet \
     --model_name ijepa-b \
+    --tag 768b \
     --save_dir ~/checkpoints/ijepa/ijepa-b-imagenet \
     --save_interval 10 \
     --use_wandb \
@@ -14,12 +16,18 @@ python -m jepax.train.train_ijepa \
     --patch_size 14 \
     --seq_len 256 \
     --num_channels 3 \
-    --batch_size 512 \
-    --lr 1.5e-4 \
+    --batch_size 1024 \
     --epochs 300 \
-    --eval_interval 10 \
-    --eval_epochs 20 \
-    --weight_decay 0.05 \
+    --eval_interval 1 \
+    --eval_train_samples 100000 \
+    --eval_val_samples 5000 \
+    --eval_epochs 50 \
+    --n_concat 4 \
+    --weight_decay 0.04 \
+    --final_weight_decay 0.4 \
+    --start_lr 1e-4 \
+    --lr 1e-3 \
+    --end_lr 1e-6 \
     --warmup_epochs 40 \
     --ema_decay 0.996 \
     --num_pred_masks 4 \
