@@ -12,9 +12,9 @@ class PositionalEncoding(eqx.Module):
     
     def __init__(self, dim: int, seq_len: int = 5000):
         self.dim = dim
-        pe = np.zeros((seq_len, dim))
+        pe = np.zeros((seq_len, dim), dtype=np.float32)
         position = np.arange(0, seq_len, dtype=np.float32)[:, None]
-        div_term = np.exp(np.arange(0, dim, 2) * (-np.log(10000.0) / dim))
+        div_term = np.exp(np.arange(0, dim, 2, dtype=np.float32) * (-np.log(10000.0) / dim))
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
         self.pe = np.array(pe)
@@ -25,7 +25,7 @@ class PositionalEncoding(eqx.Module):
     def __call__(self, x):
         # x: (S, D)
         seq_len = x.shape[0]
-        return x + self.pe[:seq_len]
+        return x + self.pe[:seq_len].astype(x.dtype)
     
 
     
@@ -60,7 +60,7 @@ class PositionalEncoding2D(PositionalEncoding):
 
         encx = self.pe_from_idx(self.grid[0].flatten())
         ency = self.pe_from_idx(self.grid[1].flatten())
-        enc = jnp.concatenate([encx, ency], axis=-1) # concatenate halved dims
+        enc = jnp.concatenate([encx, ency], axis=-1, dtype=x.dtype) # concatenate halved dims
 
         return x + enc
 

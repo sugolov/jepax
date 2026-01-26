@@ -485,7 +485,7 @@ def train_ijepa(
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
             target_time = time.time() - target_time
 
-            z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
+            #z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
 
             if step == start_epoch * steps_per_epoch:
                 print(f"model dtype: {jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype}")
