@@ -60,10 +60,12 @@ def parse_args():
     # training
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=300)
-    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--start_lr", type=float, default=1e-4)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--end_lr", type=float, default=1e-6)
+    p.add_argument("--warmup_epochs", type=int, default=15)
     p.add_argument("--weight_decay", type=float, default=0.04)
     p.add_argument("--final_weight_decay", type=float, default=0.4) 
-    p.add_argument("--warmup_epochs", type=int, default=10)
     # ema
     p.add_argument("--ema_decay", type=float, default=0.996)
     # masking
@@ -118,8 +120,9 @@ def load_checkpoint(path):
     ema_encoder = eqx.tree_deserialise_leaves(path + "_ema_enc.eqx", model.encoder)
     
     lr_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=0.0,
+        init_value=hparams['start_lr'],
         peak_value=hparams['lr'],
+        end_value=hparams['end_lr'],
         warmup_steps=hparams['warmup_epochs'] * hparams['steps_per_epoch'],
         decay_steps=hparams['epochs'] * hparams['steps_per_epoch'],
     )
@@ -255,7 +258,9 @@ def train_ijepa(
     tag: str = None,
     epochs: int = 300,
     batch_size: int = 64,
-    lr: float = 1e-4,
+    start_lr: float = 1e-4,
+    lr: float = 1e-3,
+    end_lr: float = 1e-6,
     weight_decay: float = 0.04,
     final_weight_decay: float = 0.4,
     warmup_epochs: int = 10,
@@ -318,8 +323,6 @@ def train_ijepa(
         sharding=(num_devices > 1),
         seed=seed
     )
-    if num_devices > 1:
-        print("loader using sharding")
 
     if eval_interval > 0:
         val_loader, _, _, _ = build_dataloader(
@@ -360,8 +363,9 @@ def train_ijepa(
         
         # initialize optimizer
         lr_schedule = optax.warmup_cosine_decay_schedule(
-            init_value=0.0,
+            init_value=start_lr,
             peak_value=lr,
+            end_value=end_lr,
             warmup_steps=warmup_epochs * steps_per_epoch,
             decay_steps=epochs * steps_per_epoch,
         )
@@ -481,7 +485,7 @@ def train_ijepa(
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
             target_time = time.time() - target_time
 
-            z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
+            #z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
 
             if step == start_epoch * steps_per_epoch:
                 print(f"model dtype: {jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype}")
@@ -521,7 +525,7 @@ def train_ijepa(
                     )
             pbar.set_postfix(OrderedDict([
                 ("loss", f"{loss:.3f}"),
-                ("loader_time", f"{loader_time:.3f}s"),
+                ("load_time", f"{loader_time:.3f}s"),
                 ("step_time", f"{step_time:.3f}s"),
                 ("target_time", f"{target_time:.3f}s"),
                 ("mask_time", f"{mask_time:.3f}s"),
@@ -537,7 +541,7 @@ def train_ijepa(
         if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
             probe_time = time.time()
             key, eval_key = jax.random.split(key)
-            print(f"Epoch {epoch+1}/{epochs}: linear probe eval," \
+            print(f"Epoch {epoch+1}/{epochs}: linear probe eval, " \
                     f"{eval_train_samples or 'all'} train, {eval_val_samples or 'all'} val"
                   )
             eval_result, log_result = eval_probe(
