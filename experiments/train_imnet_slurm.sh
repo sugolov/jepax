@@ -1,10 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=test
+#SBATCH --job-name=ijepa
 #SBATCH --partition=main
 #SBATCH --gres=gpu:a100:8
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --time=172:00:00
+#SBATCH --exclude=hyperplane-3,hyperplane-4,tinybox
 
 # Usage: WANDB_API_KEY=xxx sbatch train_imnet_slurm.sh
 
@@ -18,8 +19,6 @@ echo "Node: $(hostname)"
 echo "Python before activate: $(which python)"
 source /mnt/data0/shared/owen/pain1/bin/activate
 echo "Python after activate: $(which python)"
-echo "Checking grain:"
-python -c "import grain; print('grain OK:', grain.__file__)"
 
 # ------------- W&B Setup -------------
 if [ -z "${WANDB_API_KEY:-}" ]; then
