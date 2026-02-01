@@ -8,7 +8,7 @@ bfloat16: false
 
 data:
   dataset: imagenet
-  data_dir: ~/data
+  data_dir: /mnt/data0/shared/owen/imagenet
   batch_size: 2048
   num_workers: 16
   prefetch_factor: 4
