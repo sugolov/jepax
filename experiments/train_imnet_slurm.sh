@@ -14,7 +14,12 @@ set -euo pipefail
 REPO_DIR="/mnt/data0/shared/owen/jepax"
 
 # ------------- Environment -------------
+echo "Node: $(hostname)"
+echo "Python before activate: $(which python)"
 source /mnt/data0/shared/owen/pain1/bin/activate
+echo "Python after activate: $(which python)"
+echo "Checking grain:"
+python -c "import grain; print('grain OK:', grain.__file__)"
 
 # ------------- W&B Setup -------------
 if [ -z "${WANDB_API_KEY:-}" ]; then
