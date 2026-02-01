@@ -1,5 +1,6 @@
-import yaml
 from types import SimpleNamespace
+
+import yaml
 
 
 def _to_namespace(d):

@@ -1,19 +1,15 @@
+import equinox as eqx
 import jax
 from jax import numpy as jnp
-import numpy as np
-import einops
-
-import equinox as eqx
-from equinox.nn import Linear
-
-from typing import Optional
-from jaxtyping import Float, Array, PRNGKeyArray, Key
+from jaxtyping import Array, Float, Key, PRNGKeyArray
 
 from jepax.model.masker import set_token_mask
-from jepax.model.transformer import Transformer, PositionalEncoding, PositionalEncoding2D
+from jepax.model.transformer import (
+    PositionalEncoding2D,
+    Transformer,
+)
 from jepax.model.vit import PatchEmbedding
 
-from jepax.model.utils import init_linear_weight
 
 # Encoder configs (same as ViT)
 ijepa_encoder_configs = {
@@ -55,7 +51,10 @@ def get_encoder_config(
     seq_len: int = 256,
 ):
     if name not in ijepa_encoder_configs:
-        raise ValueError(f"Unknown encoder config: {name}. Choose from {list(ijepa_encoder_configs.keys())}")
+        raise ValueError(
+            f"Unknown encoder config: {name}. "
+            f"Choose from {list(ijepa_encoder_configs.keys())}"
+        )
     return {
         **ijepa_encoder_configs[name],
         "num_channels": num_channels,
@@ -74,7 +73,10 @@ def get_predictor_config(
     seq_len: int = 256,
 ):
     if name not in ijepa_predictor_configs:
-        raise ValueError(f"Unknown predictor config: {name}. Choose from {list(ijepa_predictor_configs.keys())}")
+        raise ValueError(
+            f"Unknown predictor config: {name}. "
+            f"Choose from {list(ijepa_predictor_configs.keys())}"
+        )
     return {
         **ijepa_predictor_configs[name],
         "dim": enc_dim,  # predictor input dim must match encoder output
@@ -86,7 +88,9 @@ def get_predictor_config(
 
 def get_ijepa_config(name: str):
     if name not in ijepa_configs:
-        raise ValueError(f"Unknown IJEPA config: {name}. Choose from {list(ijepa_configs.keys())}")
+        raise ValueError(
+            f"Unknown IJEPA config: {name}. Choose from {list(ijepa_configs.keys())}"
+        )
     return ijepa_configs[name]
 
 
@@ -101,10 +105,10 @@ def get_ijepa_model(
     seq_len: int = 256,
 ):
     enc_name, pred_name = get_ijepa_config(name)
-    
+
     k1, k2 = jax.random.split(key)
     grid_size = img_size // patch_size
-    
+
     enc_config = get_encoder_config(
         enc_name,
         num_channels=num_channels,
@@ -113,7 +117,7 @@ def get_ijepa_model(
         p_drop=p_drop,
         seq_len=seq_len,
     )
-    
+
     pred_config = get_predictor_config(
         pred_name,
         enc_dim=enc_config["dim"],
@@ -121,13 +125,14 @@ def get_ijepa_model(
         p_drop=p_drop,
         seq_len=seq_len,
     )
-    
+
     encoder = IJEPAEncoder(**enc_config, key=k1)
     predictor = IJEPAPredictor(**pred_config, key=k2)
     model = IJEPA(encoder=encoder, predictor=predictor)
     # model = init_linear_weight(model, t)
-    
-    return IJEPA(encoder=encoder, predictor=predictor), enc_config["dim"]
+
+    return model, enc_config["dim"]
+
 
 class IJEPAEncoder(eqx.Module):
     embed: PatchEmbedding
@@ -144,15 +149,15 @@ class IJEPAEncoder(eqx.Module):
         num_head: int,
         mlp_ratio: float = 3.0,
         p_drop: float = 0.1,
-        seq_len: int = 2048,        
+        seq_len: int = 2048,
         *,
-        key: PRNGKeyArray
+        key: PRNGKeyArray,
     ):
         k1, k2, k3 = jax.random.split(key, 3)
 
         self.embed = PatchEmbedding(num_channels, dim, patch_size, k1)
         self.transformer = Transformer(
-            dim=dim, 
+            dim=dim,
             num_layers=num_layers,
             num_head=num_head,
             mlp_ratio=mlp_ratio,
@@ -161,10 +166,9 @@ class IJEPAEncoder(eqx.Module):
             grid_size=img_size // patch_size,
             pe_type="2d",
             key=k2,
-            causal=False
+            causal=False,
         )
         self.mask_token = jax.random.normal(k3, (1, dim))
-
 
     def __call__(self, key, x, mask=None, train=True, get_intermediates=False):
         x = self.embed(x)
@@ -172,15 +176,13 @@ class IJEPAEncoder(eqx.Module):
         if mask is not None:
             x = set_token_mask(x, mask, self.mask_token)
 
-
         out = self.transformer(
-            x, key=key, 
-            train=train, 
-            get_intermediates=get_intermediates
+            x, key=key, train=train, get_intermediates=get_intermediates
         )
         # returns a list of intermediates if get_intermediates is true
         return out
-    
+
+
 class IJEPAPredictor(eqx.Module):
     in_proj: eqx.nn.Linear
     out_proj: eqx.nn.Linear
@@ -202,27 +204,29 @@ class IJEPAPredictor(eqx.Module):
         p_drop: float = 0.1,
         seq_len: int = 2048,
         *,
-        key: PRNGKeyArray
+        key: PRNGKeyArray,
     ):
         k1, k2, k3, k4, k5 = jax.random.split(key, 5)
 
         self.in_proj = eqx.nn.Linear(dim, latent_dim, key=k1)
         self.transformer = Transformer(
-            dim=latent_dim, 
+            dim=latent_dim,
             num_layers=num_layers,
             num_head=num_head,
             mlp_ratio=mlp_ratio,
             p_drop=p_drop,
             seq_len=seq_len,
             key=k2,
-            causal=False
+            causal=False,
         )
         self.mask_token = jax.random.normal(k3, (1, latent_dim))
         self.pred_token = jax.random.normal(k4, (1, latent_dim))
         self.out_proj = eqx.nn.Linear(latent_dim, dim, key=k5)
-        self.pe = PositionalEncoding2D(dim=latent_dim, seq_len=seq_len, grid_size=grid_size)
+        self.pe = PositionalEncoding2D(
+            dim=latent_dim, seq_len=seq_len, grid_size=grid_size
+        )
 
-    #@partial(jax.jit, static_argnames=('num_pad', 'fill_value'))
+    # @partial(jax.jit, static_argnames=('num_pad', 'fill_value'))
     def _get_pred_idx(self, mask_pred, num_pad=64, fill_value=-1):
         """Returns grid and flattened indices for predictor tokens
         - mask_idx: indices of tokens from context to be predicted
@@ -236,24 +240,36 @@ class IJEPAPredictor(eqx.Module):
         Returns:
             _type_: _description_
         """
-        # flatten last 2 dims 
+        # flatten last 2 dims
         mask_pred_flat = mask_pred.reshape(*mask_pred.shape[:1], -1)
 
-        mask_idx = jnp.stack(jnp.where(mask_pred_flat, size=num_pad, fill_value=fill_value)[1:])[0]
-        mask_idx_pos = jnp.stack(jnp.where(mask_pred, size=num_pad, fill_value=fill_value)[1:])
+        mask_idx = jnp.stack(
+            jnp.where(mask_pred_flat, size=num_pad, fill_value=fill_value)[1:]
+        )[0]
+        mask_idx_pos = jnp.stack(
+            jnp.where(mask_pred, size=num_pad, fill_value=fill_value)[1:]
+        )
         return mask_idx, mask_idx_pos
 
-
-    #@partial(jax.jit, static_argnames=('num_pad', 'num_prev'))
+    # @partial(jax.jit, static_argnames=('num_pad', 'num_prev'))
     def _get_pred_attn_mask(self, mask_idx, num_prev=0):
         # NOTE: mask is 0 for tokens we attend
         attn_mask = jnp.concatenate([jnp.zeros(num_prev), mask_idx < 0])
-        return jnp.repeat(attn_mask[None, :], num_prev + len(mask_idx), axis=0).astype(bool)
+        return jnp.repeat(attn_mask[None, :], num_prev + len(mask_idx), axis=0).astype(
+            bool
+        )
 
-    def __call__(self, key, z: Float[Array, "T D"], mask_pred: Float[Array, "Bm T D"], num_pad: int, train=True):
+    def __call__(
+        self,
+        key,
+        z: Float[Array, "T D"],
+        mask_pred: Float[Array, "Bm T D"],
+        num_pad: int,
+        train=True,
+    ):
         # project tokens
         T = z.shape[0]
-        z = jax.vmap(self.in_proj)(z) # vmap proj over token
+        z = jax.vmap(self.in_proj)(z)  # vmap proj over token
 
         # mask_idx:         flattened token indices
         # mask_idx_pos:     (i,j) grid thats good for pos encoding
@@ -262,9 +278,11 @@ class IJEPAPredictor(eqx.Module):
 
         # set mask tokens
         z = jnp.where(mask_full[:, None], self.mask_token, z)
-        
-        pe_pred = self.pe._get_pe_from_grid(mask_idx_pos)     # positional embedding
-        x_pred = jnp.repeat(self.pred_token, num_pad, axis=0) # repeat token for pad length
+
+        pe_pred = self.pe._get_pe_from_grid(mask_idx_pos)  # positional embedding
+        x_pred = jnp.repeat(
+            self.pred_token, num_pad, axis=0
+        )  # repeat token for pad length
         x_pred = x_pred + pe_pred
 
         # concatenate predicted array with current x
@@ -276,24 +294,25 @@ class IJEPAPredictor(eqx.Module):
         z = jax.vmap(self.out_proj)(z)[T:]
 
         return z, mask_idx
-    
+
+
 class IJEPA(eqx.Module):
     encoder: IJEPAEncoder
     predictor: IJEPAPredictor
 
-    def __init__(self,
-        encoder: IJEPAEncoder,
-        predictor: IJEPAPredictor):
+    def __init__(self, encoder: IJEPAEncoder, predictor: IJEPAPredictor):
         self.encoder = encoder
         self.predictor = predictor
 
-    def __call__(self, key: Key, x: Array, mask_ctx, mask_pred, num_pad=256, train=True):
+    def __call__(
+        self, key: Key, x: Array, mask_ctx, mask_pred, num_pad=256, train=True
+    ):
         k1, k2, k3 = jax.random.split(key, 3)
         mask_enc = ~(~mask_ctx | jnp.any(mask_pred, axis=0))
 
         z = self.encoder(k1, x, mask_enc, train=train)
         # z_full = jax.lax.stop_gradient(self.encoder(k2, x, train=train)) # stop grad
-        
+
         z_pred, mask_idx = self.predictor(k3, z, num_pad=num_pad, mask_pred=mask_pred)
 
         # return z, z_full, z_pred, mask_idx

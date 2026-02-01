@@ -1,23 +1,22 @@
-import numpy as np
-import jax
-from jax import numpy as jnp
 import equinox as eqx
-from typing import Optional
-from jaxtyping import Array, PRNGKeyArray
+import jax
+from jaxtyping import PRNGKeyArray
+
 
 class FeedForward(eqx.Module):
     """A 2 layer feedforward network"""
+
     linear1: eqx.nn.Linear
     linear2: eqx.nn.Linear
     norm: eqx.nn.LayerNorm
-    
+
     def __init__(self, dim: int, mlp_ratio: float, *, key: PRNGKeyArray):
         k1, k2 = jax.random.split(key)
         dmid = int(mlp_ratio * dim)
         self.linear1 = eqx.nn.Linear(dim, dmid, key=k1)
         self.linear2 = eqx.nn.Linear(dmid, dim, key=k2)
         self.norm = eqx.nn.LayerNorm(dmid)
-    
+
     def __call__(self, x):
         """
         Note: the fp is batched
@@ -33,6 +32,7 @@ class FeedForward(eqx.Module):
         x = jax.vmap(self.norm)(x)
         x = jax.nn.gelu(jax.vmap(self.linear2)(x))
         return x
+
 
 if __name__ == "__main__":
     k1, k2 = jax.random.split(jax.random.PRNGKey(0))

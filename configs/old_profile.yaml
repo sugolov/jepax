@@ -30,6 +30,7 @@ train:
   final_wd: null
   ema_decay: 0.996
   seed: 42
+  normalize_targets: true  # layer norm on targets before loss (prevents collapse)
 
 mask:
   n_pred_masks: 4

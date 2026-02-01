@@ -213,3 +213,4 @@ __pycache__
 slurm
 *.DS_Store
 claude*
+scratch/
