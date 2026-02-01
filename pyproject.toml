@@ -27,6 +27,7 @@ license = {file = "LICENSE"}
 dependencies = [
     "einops>=0.8.1",
     "equinox>=0.13.2",
+    "grain>=0.2.0",
     "optax>=0.2.6",
     "pyyaml>=6.0",
     "torch>=2.9.1",
