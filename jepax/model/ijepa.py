@@ -232,7 +232,7 @@ class IJEPAPredictor(eqx.Module):
         x = jax.vmap(self.in_proj)(x) # vmap proj over token
 
         # put mask token at tokens outside context
-        x = jnp.where(~mask_ctx.flatten()[:, None], self.mask_token, x)
+        x = jnp.where(mask_ctx.flatten()[:, None], x, self.mask_token)
 
         # put pred token at positions in mask_pred
         mask_target = mask_pred.any(axis=0).flatten()

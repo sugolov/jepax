@@ -49,6 +49,7 @@ def parse_args():
     p.add_argument("--wandb_project", type=str, default="ijepa")
     p.add_argument("--use_aim", action="store_true")
     p.add_argument("--aim_repo", type=str, default=".aim")
+    p.add_argument("--log_interval", type=int, default=100)
     p.add_argument("--save_interval", type=int, default=10)
     p.add_argument("--print_interval", type=int, default=1)
     p.add_argument("--tag", type=str, default=None)
@@ -206,6 +207,7 @@ def compute_target_reps(ema_encoder, x_b, key):
 
 @eqx.filter_value_and_grad
 def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
+
     keys = jax.random.split(key, x_b.shape[0])
 
     # forward
@@ -263,6 +265,7 @@ def train_ijepa(
     aim_repo: str = ".aim",
     use_wandb: bool = False,
     wandb_project: str = "ijepa",
+    log_interval: int = 100,
     save_interval: int = 10,
     print_interval: int = 1,
     # eval
@@ -420,23 +423,48 @@ def train_ijepa(
     model, ema_encoder, opt_state = eqx.filter_shard(
             (model, ema_encoder, opt_state), model_sharding
         )
+    ema_scheduler = optax.linear_schedule(
+        init_value=ema_decay,
+        end_value=1,
+        transition_steps=epochs*steps_per_epoch
+    )
     
     # step model prep
     @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, key):
 
         loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, num_pad, key)
-        updates, opt_state = optimizer.update(grads, opt_state, model)
 
+        # track gradient statistics
+        grad_stats = {}
+        enc_blocks = grads.encoder.transformer.blocks
+
+        for i, block in enumerate(enc_blocks):
+            block_grads = jax.tree.leaves(eqx.filter(block, eqx.is_array))
+            if block_grads:
+                grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in block_grads))
+                grad_stats[f"enc_block_{i}"] = grad_norm
+
+        pred_blocks = grads.predictor.transformer.blocks
+        for i, block in enumerate(pred_blocks):
+            block_grads = jax.tree.leaves(eqx.filter(block, eqx.is_array))
+            if block_grads:
+                grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in block_grads))
+                grad_stats[f"pred_block_{i}"] = grad_norm
+        
+        grad_stats["all_grads"] = jnp.sqrt(
+            sum((jnp.sum(v**2) for v in list(grad_stats.values())))
+        )
+
+        updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         
-        return eqx.filter_shard((model, opt_state, loss), model_sharding)
+        return *eqx.filter_shard((model, opt_state, loss), model_sharding), grad_stats
     
     @partial(jax.jit, static_argnums=(1, 2, 3))
     def generate_masks(key, masker, num_pred_masks, batch_size):
-        with jax.named_scope("generate_masks"):
-            mask_keys = jax.random.split(key, batch_size)
-            return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
+        mask_keys = jax.random.split(key, batch_size)
+        return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
 
     # training loop
     step = start_epoch * steps_per_epoch
@@ -490,12 +518,16 @@ def train_ijepa(
 
             # train step
             step_time = time.time()
-            model, opt_state, loss = step_model(
+            model, opt_state, loss, grad_stats, = step_model(
                 model, opt_state,
                 x, z_ema, mask_ctx, mask_pred,
                 num_pad, step_key
             )
-            ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
+            ema_encoder = update_ema(
+                ema_encoder, 
+                model.encoder, 
+                float(ema_scheduler(step))
+            )
             assert not jnp.isnan(loss), f"Epoch {epoch+1}/{epochs}:NaN \
                 loss at step {step}"
             step_time = time.time() - step_time
@@ -504,15 +536,17 @@ def train_ijepa(
             step += 1
             epoch_losses.append(loss)
             
-            if step % 100 == 0:
+            if step % log_interval == 0:
                 if use_aim:
                     run.track(loss.item(), name="loss", step=step, epoch=epoch)
                 if use_wandb:
                     wandb.log({
                         "loss": loss.item(), 
-                        "epoch": epoch,
-                        "lr": float(lr_schedule(step)),
-                        "wd": float(wd_schedule(step))
+                        "schedule/epoch": epoch,
+                        "schedule/lr": float(lr_schedule(step)),
+                        "schedule/wd": float(wd_schedule(step)),
+                        "schedule/ema": float(ema_scheduler(step)),
+                        **{f"grad/{k}": float(v) for k, v in grad_stats.items()},
                     }, 
                         step=step
                     )
