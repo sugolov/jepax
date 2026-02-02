@@ -35,7 +35,6 @@ train:
 
 mask:
   n_pred_masks: 4
-  num_pad: 64
   pred_scale: [0.15, 0.2]
   pred_aspect: [0.75, 1.5]
   ctx_scale: [0.85, 1.0]

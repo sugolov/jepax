@@ -183,23 +183,21 @@ def normalize_targets(z_ema):
 
 
 @eqx.filter_value_and_grad
-def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
+def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
     keys = jax.random.split(key, x_b.shape[0])
 
-    _, z_pred, mask_idx = jax.vmap(
-        lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=num_pad, train=True)
+    _, z_pred, mask_target = jax.vmap(
+        lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
-    # Padded loss calculation
-    valid = mask_idx >= 0
-    safe_idx = jnp.where(valid, mask_idx, 0)
-    target = jax.vmap(lambda z, idx: z[idx])(z_ema, safe_idx)
-
-    target = target.astype(jnp.float32)
+    z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
 
-    mse = jnp.sum((target - z_pred) ** 2, axis=-1)
-    loss = jnp.sum(mse * valid) / jnp.sum(valid)
+    diff = z_ema - z_pred
+    abs_diff = jnp.abs(diff)
+    smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
+    loss_per_token = jnp.mean(smooth_l1, axis=-1)
+    loss = jnp.sum(loss_per_token * mask_target) / jnp.sum(mask_target)
 
     return loss
 
@@ -353,10 +351,8 @@ def train_ijepa(cfg):
 
     # JIT compiled functions
     @eqx.filter_jit
-    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, key):
-        loss, grads = compute_grads(
-            model, x, z_ema, mask_ctx, mask_pred, num_pad, key
-        )
+    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, key):
+        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, key)
         updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         if model_sharding is not None:
@@ -370,7 +366,6 @@ def train_ijepa(cfg):
 
     # Training loop
     step = start_epoch * steps_per_epoch
-    num_pad = mask_cfg.num_pad
 
     for epoch in range(start_epoch, train_cfg.epochs):
         time_ep_start = time.time()
@@ -424,7 +419,7 @@ def train_ijepa(cfg):
             # Train step
             step_time = time.time()
             model, opt_state, loss = step_model(
-                model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, step_key
+                model, opt_state, x, z_ema, mask_ctx, mask_pred, step_key
             )
             # EMA with linear schedule
             ema_decay = ema_start + (ema_end - ema_start) * (step / total_steps)
@@ -433,8 +428,8 @@ def train_ijepa(cfg):
             step_time = time.time() - step_time
 
             # Mask counts for logging
-            mask_a = int(jnp.sum(mask_ctx[0] >= 0))  # context patches
-            mask_b = int(jnp.sum(mask_pred[0] >= 0))  # target patches
+            mask_a = int(jnp.sum(mask_ctx[0]))  # context patches
+            mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))  # target patches
 
             # Profile end
             if prof_cfg.enabled and step == prof_cfg.end_step:

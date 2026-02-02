@@ -3,7 +3,6 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Key, PRNGKeyArray
 
-from jepax.model.masker import set_token_mask
 from jepax.model.transformer import (
     PositionalEncoding2D,
     Transformer,
@@ -174,12 +173,11 @@ class IJEPAEncoder(eqx.Module):
         x = self.embed(x)
 
         if mask is not None:
-            x = set_token_mask(x, mask, self.mask_token)
+            x = jnp.where(mask.flatten()[..., None], x, self.mask_token)
 
         out = self.transformer(
             x, key=key, train=train, get_intermediates=get_intermediates
         )
-        # returns a list of intermediates if get_intermediates is true
         return out
 
 
@@ -226,74 +224,26 @@ class IJEPAPredictor(eqx.Module):
             dim=latent_dim, seq_len=seq_len, grid_size=grid_size
         )
 
-    # @partial(jax.jit, static_argnames=('num_pad', 'fill_value'))
-    def _get_pred_idx(self, mask_pred, num_pad=64, fill_value=-1):
-        """Returns grid and flattened indices for predictor tokens
-        - mask_idx: indices of tokens from context to be predicted
-        - mask_idx_pos: (i,j) grid corresponding to mask_idx
-
-        Args:
-            mask_pred (_type_): _description_
-            num_pad (int, optional): _description_. Defaults to 64.
-            fill_value (int, optional): _description_. Defaults to -1.
-
-        Returns:
-            _type_: _description_
-        """
-        # flatten last 2 dims
-        mask_pred_flat = mask_pred.reshape(*mask_pred.shape[:1], -1)
-
-        mask_idx = jnp.stack(
-            jnp.where(mask_pred_flat, size=num_pad, fill_value=fill_value)[1:]
-        )[0]
-        mask_idx_pos = jnp.stack(
-            jnp.where(mask_pred, size=num_pad, fill_value=fill_value)[1:]
-        )
-        return mask_idx, mask_idx_pos
-
-    # @partial(jax.jit, static_argnames=('num_pad', 'num_prev'))
-    def _get_pred_attn_mask(self, mask_idx, num_prev=0):
-        # NOTE: mask is 0 for tokens we attend
-        attn_mask = jnp.concatenate([jnp.zeros(num_prev), mask_idx < 0])
-        return jnp.repeat(attn_mask[None, :], num_prev + len(mask_idx), axis=0).astype(
-            bool
-        )
-
     def __call__(
         self,
         key,
-        z: Float[Array, "T D"],
-        mask_pred: Float[Array, "Bm T D"],
-        num_pad: int,
+        x: Float[Array, "T D"],
+        mask_pred: Float[Array, "Bm G G"],
+        mask_ctx: Float[Array, "G G"],
         train=True,
     ):
-        # project tokens
-        T = z.shape[0]
-        z = jax.vmap(self.in_proj)(z)  # vmap proj over token
+        x = jax.vmap(self.in_proj)(x)
 
-        # mask_idx:         flattened token indices
-        # mask_idx_pos:     (i,j) grid thats good for pos encoding
-        mask_idx, mask_idx_pos = self._get_pred_idx(mask_pred, num_pad=num_pad)
-        mask_full = mask_pred.any(axis=0).flatten()
+        x = jnp.where(~mask_ctx.flatten()[:, None], self.mask_token, x)
 
-        # set mask tokens
-        z = jnp.where(mask_full[:, None], self.mask_token, z)
+        mask_target = mask_pred.any(axis=0).flatten()
+        x = jnp.where(mask_target[:, None], self.pred_token, x)
 
-        pe_pred = self.pe._get_pe_from_grid(mask_idx_pos)  # positional embedding
-        x_pred = jnp.repeat(
-            self.pred_token, num_pad, axis=0
-        )  # repeat token for pad length
-        x_pred = x_pred + pe_pred
+        x = self.transformer(x, key=key, train=train, use_pe=True)
 
-        # concatenate predicted array with current x
-        z = jnp.concatenate([z, x_pred], axis=0)
+        x = jax.vmap(self.out_proj)(x)
 
-        # mask out padded values in x_pred in forward pass
-        attn_mask = self._get_pred_attn_mask(mask_idx, num_prev=T)
-        z = self.transformer(z, key=key, train=train, use_pe=False, attn_mask=attn_mask)
-        z = jax.vmap(self.out_proj)(z)[T:]
-
-        return z, mask_idx
+        return x, mask_target
 
 
 class IJEPA(eqx.Module):
@@ -304,16 +254,14 @@ class IJEPA(eqx.Module):
         self.encoder = encoder
         self.predictor = predictor
 
-    def __call__(
-        self, key: Key, x: Array, mask_ctx, mask_pred, num_pad=256, train=True
-    ):
-        k1, k2, k3 = jax.random.split(key, 3)
-        mask_enc = ~(~mask_ctx | jnp.any(mask_pred, axis=0))
+    def __call__(self, key: Key, x: Array, mask_ctx, mask_pred, train=True):
+        k1, k2 = jax.random.split(key, 2)
+        mask_enc = mask_ctx & ~jnp.any(mask_pred, axis=0)
 
-        z = self.encoder(k1, x, mask_enc, train=train)
-        # z_full = jax.lax.stop_gradient(self.encoder(k2, x, train=train)) # stop grad
+        z_enc = self.encoder(k1, x, mask_enc, train=train)
 
-        z_pred, mask_idx = self.predictor(k3, z, num_pad=num_pad, mask_pred=mask_pred)
+        z_pred, mask_target = self.predictor(
+            k2, z_enc, mask_ctx=mask_ctx, mask_pred=mask_pred
+        )
 
-        # return z, z_full, z_pred, mask_idx
-        return z, z_pred, mask_idx
+        return z_enc, z_pred, mask_target
