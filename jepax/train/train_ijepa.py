@@ -217,7 +217,7 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
     # compute loss at mask_target
-    mse = jnp.mean((z_ema - z_pred) ** 2, axis=-1)  # (B, num_pad)
+    mse = jnp.sum((z_ema - z_pred) ** 2, axis=-1)  # (B, num_pad)
     loss = jnp.sum(mse * mask_target) / jnp.sum(mask_target)  # only count valid positions
     
     return loss

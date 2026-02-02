@@ -1,0 +1,16 @@
+jax[cuda12]
+equinox
+einops
+flax
+optax
+pytest
+torch
+torchvision
+wandb
+numpy
+matplotlib
+tqdm
+aim
+huggingface_hub
+datasets
+grain
