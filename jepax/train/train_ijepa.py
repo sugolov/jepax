@@ -71,7 +71,7 @@ def load_checkpoint(path, cfg):
 
     model, _ = get_ijepa_model(
         hparams["model"]["name"],
-        key=jax.random.PRNGKey(hparams["train"]["seed"]),
+        key=jax.random.key(hparams["train"]["seed"]),
         num_channels=hparams["model"]["num_channels"],
         patch_size=hparams["model"]["patch_size"],
         img_size=hparams["img_size"],
@@ -214,7 +214,7 @@ def train_ijepa(cfg):
     prof_cfg = cfg.profile
 
     # Setup
-    key = jax.random.PRNGKey(train_cfg.seed)
+    key = jax.random.key(train_cfg.seed)
     print(f"JAX backend: {jax.devices()[0].platform}")
     print(f"JAX devices: {jax.devices()}")
     num_devices = len(jax.devices())

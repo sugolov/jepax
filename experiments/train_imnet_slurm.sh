@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ijepa
+#SBATCH --job-name=test
 #SBATCH --partition=main
 #SBATCH --gres=gpu:a100:8
 #SBATCH --cpus-per-task=32

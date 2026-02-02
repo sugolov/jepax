@@ -46,6 +46,7 @@ class IJEPAMasker:
         ctx_aspect=1.0,
         pred_scale=(0.15, 0.2),
         pred_aspect=(0.75, 1.5),
+        min_keep=10,
     ):
         self.h = height
         self.w = width
@@ -53,29 +54,21 @@ class IJEPAMasker:
 
         self.h_patch = self.h // self.ps
         self.w_patch = self.w // self.ps
+        self.n_patches = self.h_patch * self.w_patch
 
         self.ctx_scale = self._create_interval(ctx_scale)
         self.ctx_aspect = self._create_interval(ctx_aspect)
         self.pred_scale = self._create_interval(pred_scale)
         self.pred_aspect = self._create_interval(pred_aspect)
+        self.min_keep = min_keep
 
-        assert jnp.floor(self.w * self.ctx_scale[-1]) > 0
-        assert jnp.floor(self.h * self.ctx_scale[-1] * self.ctx_aspect[-1]) > 0
-
-        assert jnp.floor(self.w * self.pred_scale[-1]) > 0
-        assert jnp.floor(self.h * self.pred_scale[-1] * self.pred_aspect[-1]) > 0
-
-    def _get_idx_mask(self, scale, aspect):
-        w_mask = jnp.floor(self.w * scale / jnp.max(jnp.array([aspect, 1.0])))
-        h_mask = jnp.floor(self.h * scale / jnp.min(jnp.array([aspect, 1.0])))
-
-        # w_mask = jnp.floor(self.w * scale)
-        # h_mask = jnp.floor(self.h * scale * aspect)
-
-        i_max, j_max = (self.w - w_mask) // self.ps, (self.h - h_mask) // self.ps
-        pw_mask, ph_mask = w_mask // self.ps, h_mask // self.ps
-
-        return i_max, j_max, pw_mask, ph_mask
+    def _get_block_size(self, scale, aspect):
+        n_keep = int(self.n_patches * scale)
+        h_block = int(round(jnp.sqrt(n_keep * aspect)))
+        w_block = int(round(jnp.sqrt(n_keep / aspect)))
+        h_block = min(h_block, self.h_patch - 1)
+        w_block = min(w_block, self.w_patch - 1)
+        return h_block, w_block
 
     def _create_interval(self, x):
         return x if isinstance(x, tuple) else (x, x)
@@ -83,48 +76,33 @@ class IJEPAMasker:
     def _sample(self, key, interval):
         return jax.random.uniform(key, minval=interval[0], maxval=interval[1])
 
-    def _sample_aspects(self, key):
-        k1, k2, k3, k4 = jax.random.split(key, 4)
-        ctx_scale = self._sample(k1, self.ctx_scale)
-        ctx_aspect = self._sample(k2, self.ctx_aspect)
-        pred_scale = self._sample(k3, self.pred_scale)
-        pred_aspect = self._sample(k4, self.pred_aspect)
-        return ctx_scale, ctx_aspect, pred_scale, pred_aspect
-
-    def _sample_mask(self, key, flatten, i_max, j_max, pw_mask, ph_mask):
+    def _sample_block_mask(self, key, h_block, w_block, flatten=False):
         k1, k2 = jax.random.split(key, 2)
-        i = jax.random.randint(k1, (), minval=0, maxval=i_max)
-        j = jax.random.randint(k2, (), minval=0, maxval=j_max)
+        top = jax.random.randint(k1, (), minval=0, maxval=self.h_patch - h_block + 1)
+        left = jax.random.randint(k2, (), minval=0, maxval=self.w_patch - w_block + 1)
 
         ii, jj = jnp.meshgrid(
             jnp.arange(self.h_patch), jnp.arange(self.w_patch), indexing="ij"
         )
-        mask = (ii >= i) & (ii < i + ph_mask) & (jj >= j) & (jj < j + pw_mask)
-        mask = mask.flatten() if flatten else mask
-
-        return mask
+        mask = (ii >= top) & (ii < top + h_block) & (jj >= left) & (jj < left + w_block)
+        return mask.flatten() if flatten else mask
 
     def __call__(self, key, M, flatten=False):
-        """
+        keys = jax.random.split(key, M + 3)
+        k_scales, k_ctx, pred_keys = keys[0], keys[1], keys[2:]
 
-        Args:
-            key (Key): RNG key for mask sampling
-            M (int): Number of prediction masks
+        k1, k2, k3, k4 = jax.random.split(k_scales, 4)
+        ctx_scale = self._sample(k1, self.ctx_scale)
+        ctx_aspect = self._sample(k2, self.ctx_aspect)
+        pred_scale = self._sample(k3, self.pred_scale)
+        pred_aspect = self._sample(k4, self.pred_aspect)
 
-        Returns:
-            Masks of shape (self.h_patch, self.w_patch), (M, self.h_patch, self.w_patch)
-        """
-        keys = jax.random.split(key, M + 2)
-        k1, k2, pred_keys = keys[0], keys[1], keys[2:]  # pred_keys is already (M, 2)
-
-        ctx_scale, ctx_aspect, pred_scale, pred_aspect = self._sample_aspects(k1)
-
-        ctx_mask = self._sample_mask(
-            k2, flatten, *self._get_idx_mask(ctx_scale, ctx_aspect)
-        )
-
+        pred_h, pred_w = self._get_block_size(pred_scale, pred_aspect)
         pred_mask = jax.vmap(
-            self._sample_mask, in_axes=(0, None, None, None, None, None)
-        )(pred_keys, flatten, *self._get_idx_mask(pred_scale, pred_aspect))
+            lambda k: self._sample_block_mask(k, pred_h, pred_w, flatten)
+        )(pred_keys)
+
+        ctx_h, ctx_w = self._get_block_size(ctx_scale, ctx_aspect)
+        ctx_mask = self._sample_block_mask(k_ctx, ctx_h, ctx_w, flatten)
 
         return ctx_mask, pred_mask
