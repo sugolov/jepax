@@ -41,7 +41,7 @@ mask:
   ctx_aspect: 1.0
 
 eval:
-  interval: 50
+  interval: 30
   epochs: 50
   batch_size: 4096
   train_samples: 50000

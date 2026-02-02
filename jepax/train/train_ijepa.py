@@ -472,8 +472,11 @@ def train_ijepa(cfg):
             )
             load_time = time.time()
 
-        # End of epoch - linear probe eval
-        if eval_cfg.interval > 0 and (epoch + 1) % eval_cfg.interval == 0:
+        # End of epoch - linear probe eval (always run on epoch 1 for baseline)
+        run_probe = eval_cfg.interval > 0 and (
+            epoch == 0 or (epoch + 1) % eval_cfg.interval == 0
+        )
+        if run_probe:
             probe_time = time.time()
             key, eval_key = jax.random.split(key)
             print("Running linear probe evaluation...")

@@ -63,11 +63,11 @@ class IJEPAMasker:
         self.min_keep = min_keep
 
     def _get_block_size(self, scale, aspect):
-        n_keep = int(self.n_patches * scale)
-        h_block = int(round(jnp.sqrt(n_keep * aspect)))
-        w_block = int(round(jnp.sqrt(n_keep / aspect)))
-        h_block = min(h_block, self.h_patch - 1)
-        w_block = min(w_block, self.w_patch - 1)
+        n_keep = self.n_patches * scale
+        h_block = jnp.round(jnp.sqrt(n_keep * aspect)).astype(jnp.int32)
+        w_block = jnp.round(jnp.sqrt(n_keep / aspect)).astype(jnp.int32)
+        h_block = jnp.minimum(h_block, self.h_patch - 1)
+        w_block = jnp.minimum(w_block, self.w_patch - 1)
         return h_block, w_block
 
     def _create_interval(self, x):
@@ -78,8 +78,10 @@ class IJEPAMasker:
 
     def _sample_block_mask(self, key, h_block, w_block, flatten=False):
         k1, k2 = jax.random.split(key, 2)
-        top = jax.random.randint(k1, (), minval=0, maxval=self.h_patch - h_block + 1)
-        left = jax.random.randint(k2, (), minval=0, maxval=self.w_patch - w_block + 1)
+        max_top = (self.h_patch - h_block + 1).astype(jnp.float32)
+        max_left = (self.w_patch - w_block + 1).astype(jnp.float32)
+        top = jnp.floor(jax.random.uniform(k1) * max_top).astype(jnp.int32)
+        left = jnp.floor(jax.random.uniform(k2) * max_left).astype(jnp.int32)
 
         ii, jj = jnp.meshgrid(
             jnp.arange(self.h_patch), jnp.arange(self.w_patch), indexing="ij"
