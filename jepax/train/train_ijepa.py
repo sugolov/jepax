@@ -47,6 +47,7 @@ def parse_args():
     p.add_argument("--save_dir", type=str, default=".checkpoints")
     p.add_argument("--use_wandb", action="store_true")
     p.add_argument("--wandb_project", type=str, default="ijepa")
+    p.add_argument("--wandb_entity", type=str, default=None)
     p.add_argument("--use_aim", action="store_true")
     p.add_argument("--aim_repo", type=str, default=".aim")
     p.add_argument("--log_interval", type=int, default=100)
@@ -265,6 +266,7 @@ def train_ijepa(
     aim_repo: str = ".aim",
     use_wandb: bool = False,
     wandb_project: str = "ijepa",
+    wandb_entity: str = None,
     log_interval: int = 100,
     save_interval: int = 10,
     print_interval: int = 1,
@@ -403,7 +405,10 @@ def train_ijepa(
     if use_aim: 
         run = aim.Run(repo=aim_repo, experiment=run_name)
     if use_wandb:
-        wandb.init(project=wandb_project, name=run_name, config=hparams)
+        wandb.init(project=wandb_project,
+                   entity=wandb_entity, 
+                   name=run_name, 
+                   config=hparams)
 
     # record random guess at epoch 0
     if eval_interval > 0 and start_epoch == 0:
