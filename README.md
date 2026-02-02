@@ -48,7 +48,7 @@ sudo apt install -y libopencv-dev pkg-config libturbojpeg0-dev
 ```
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax pytest torch torchvision wandb numpy matplotlib tqdm aim huggingface_hub datasets ffcv
+python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax pytest torch torchvision wandb numpy matplotlib tqdm aim huggingface_hub datasets grain
 ```
 
 ### Dataset
