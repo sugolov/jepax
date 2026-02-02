@@ -208,21 +208,14 @@ def compute_target_reps(ema_encoder, x_b, key):
 def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
     keys = jax.random.split(key, x_b.shape[0])
 
-    # ijepa forward
-    _, z_pred, mask_idx = jax.vmap(
+    # forward
+    _, z_pred, mask_target = jax.vmap(
         lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=num_pad, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
-    # padded loss calculation
-    valid = mask_idx >= 0  # (B, num_pad)
-    safe_idx = jnp.where(valid, mask_idx, 0)  # avoid OOB indexing
-    target = jax.vmap(lambda z, idx: z[idx])(z_ema, safe_idx)  # (B, num_pad, D)
-
-    target = target.astype(jnp.float32)
-    z_pred = z_pred.astype(jnp.float32)
-
-    mse = jnp.sum((target - z_pred) ** 2, axis=-1)  # (B, num_pad)
-    loss = jnp.sum(mse * valid) / jnp.sum(valid)  # only count valid positions
+    # compute loss at mask_target
+    mse = jnp.mean((z_ema - z_pred) ** 2, axis=-1)  # (B, num_pad)
+    loss = jnp.sum(mse * mask_target) / jnp.sum(mask_target)  # only count valid positions
     
     return loss
 
