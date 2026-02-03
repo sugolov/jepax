@@ -173,10 +173,15 @@ class IJEPAEncoder(eqx.Module):
         x = self.embed(x)
 
         if mask is not None:
-            x = jnp.where(mask.flatten()[..., None], x, self.mask_token)
+            mask_flat = mask.flatten()
+            x = jnp.where(mask_flat[..., None], x, self.mask_token)
+            # Attention mask: only attend to/from visible positions
+            attn_mask = mask_flat[:, None] & mask_flat[None, :]
+        else:
+            attn_mask = None
 
         out = self.transformer(
-            x, key=key, train=train, get_intermediates=get_intermediates
+            x, attn_mask=attn_mask, key=key, train=train, get_intermediates=get_intermediates
         )
         return out
 
@@ -234,12 +239,15 @@ class IJEPAPredictor(eqx.Module):
     ):
         x = jax.vmap(self.in_proj)(x)
 
-        x = jnp.where(~mask_ctx.flatten()[:, None], self.mask_token, x)
+        mask_ctx_flat = mask_ctx.flatten()
+        x = jnp.where(~mask_ctx_flat[:, None], self.mask_token, x)
 
         mask_target = mask_pred.any(axis=0).flatten()
         x = jnp.where(mask_target[:, None], self.pred_token, x)
 
-        x = self.transformer(x, key=key, train=train, use_pe=True)
+        # Attention mask: only attend within context block (includes targets)
+        attn_mask = mask_ctx_flat[:, None] & mask_ctx_flat[None, :]
+        x = self.transformer(x, attn_mask=attn_mask, key=key, train=train, use_pe=True)
 
         x = jax.vmap(self.out_proj)(x)
 
