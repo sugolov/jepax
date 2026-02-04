@@ -25,7 +25,7 @@ train:
   lr: 1.0e-3
   start_lr: 2.0e-4
   final_lr: 1.0e-6
-  warmup_epochs: 40
+  warmup_epochs: 15
   wd: 0.04
   final_wd: 0.4
   ema_start: 0.996
