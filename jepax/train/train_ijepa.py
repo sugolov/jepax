@@ -441,9 +441,8 @@ def train_ijepa(cfg):
         mask_keys = jax.random.split(key, batch_size)
         return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
 
-    @jax.jit
     def process_masks(mask_ctx, mask_pred):
-        """Convert boolean masks to indices."""
+        """Convert boolean masks to indices (not JIT'd - needs Python ints for static shapes)."""
         return masks_to_indices_batch(mask_ctx, mask_pred)
 
     # Training loop

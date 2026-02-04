@@ -34,8 +34,11 @@ if [[ "$UBUNTU_VERSION" == "24"* ]]; then
         source "$VENV_PATH/bin/activate"
         pip install --upgrade pip
         pip install -e "$REPO_DIR[experiments]"
+        pip install -U "jax[cuda12]"
     else
         source "$VENV_PATH/bin/activate"
+        # Ensure CUDA JAX is installed
+        pip install -U "jax[cuda12]" -q
     fi
 else
     VENV_PATH="/mnt/data0/shared/owen/pain1"
