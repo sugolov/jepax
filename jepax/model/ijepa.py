@@ -193,13 +193,13 @@ class IJEPAEncoder(eqx.Module):
         """
         Args:
             x: image [H, W, C]
-            mask: boolean mask [G, G] where True = visible context patch
+            mask: boolean mask [N_patches] where True = visible context patch (flattened)
         """
         x = self.embed(x)  # [N_patches, D]
         n_patches = x.shape[0]
 
         if mask is not None:
-            mask_flat = mask.flatten()
+            mask_flat = mask.reshape(-1)  # Ensure 1D
             indices, n_keep = mask_to_indices(mask_flat, n_patches)
 
             # Gather visible patches
@@ -362,14 +362,14 @@ class IJEPA(eqx.Module):
         """
         Args:
             x: image [H, W, C]
-            mask_ctx: context block mask [G, G], True = in context block
-            mask_pred: target masks [M, G, G], True = target position
+            mask_ctx: context block mask [N_patches], True = in context block (flattened)
+            mask_pred: target masks [M, N_patches], True = target position (flattened)
         """
         k1, k2 = jax.random.split(key, 2)
 
         # Encoder mask: context minus targets
-        mask_tgt = jnp.any(mask_pred, axis=0)
-        mask_enc = mask_ctx & ~mask_tgt
+        mask_tgt = jnp.any(mask_pred, axis=0)  # [N_patches]
+        mask_enc = mask_ctx & ~mask_tgt  # [N_patches]
 
         # Encode visible context patches
         z_enc, ctx_indices, n_ctx = self.encoder(k1, x, mask_enc, train=train)

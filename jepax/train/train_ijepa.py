@@ -188,80 +188,53 @@ def normalize_targets(z_ema):
 def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
     """Compute loss and gradients.
 
-    New model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
-    - z_pred: [seq_len, D] with predictions at positions [pred_start:pred_end]
-    - tgt_indices: [seq_len] indices into patch grid, first n_tgt valid
+    Model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
+    - z_pred: [seq_len, D] - predictions at positions [pred_start:pred_end]
+    - tgt_indices: [seq_len] - indices of target patches, first n_tgt valid
     - n_tgt: number of target patches
-    - pred_start, pred_end: slice indices for predictions in z_pred
+    - pred_start, pred_end: slice indices for predictions
     """
     keys = jax.random.split(key, x_b.shape[0])
+    batch_size = x_b.shape[0]
+    seq_len = z_ema.shape[1]  # N_patches
 
-    # Forward pass through model
+    # Forward pass
     z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
         lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
-    # z_ema: [B, N_patches, D] - all patch representations from EMA encoder
-    # z_pred: [B, seq_len, D] - predictions (valid at positions pred_start:pred_end)
-    # tgt_indices: [B, seq_len] - target patch indices (first n_tgt valid)
-
     z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
 
-    # Gather target representations from z_ema at target indices
-    # For each sample, gather z_ema at tgt_indices
-    def gather_targets(z, indices, n):
-        """Gather first n targets from z at indices."""
-        gathered = z[indices]  # [seq_len, D]
-        return gathered
+    # Gather target representations from z_ema
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # [B, seq_len, D]
 
-    z_tgt = jax.vmap(gather_targets)(z_ema, tgt_indices, n_tgt)  # [B, seq_len, D]
+    # Create aligned arrays for comparison:
+    # z_pred has predictions at positions [pred_start:pred_end]
+    # z_tgt has targets at positions [0:n_tgt]
+    # We need to align them
 
-    # Extract predictions at target positions (pred_start to pred_end)
-    # pred_start = n_ctx, pred_end = n_ctx + n_tgt
-    # We need to slice z_pred[:, pred_start:pred_end] but these vary per sample
-    # Instead, we'll use masking: predictions are valid at positions [pred_start, pred_end)
+    # Shift z_pred so predictions start at position 0
+    # z_pred_shifted[i] = z_pred[pred_start + i]
+    def shift_pred(z_p, ps):
+        # Roll to bring pred_start to position 0
+        return jnp.roll(z_p, -ps, axis=0)
 
-    seq_len = z_pred.shape[1]
-    batch_size = z_pred.shape[0]
+    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)  # [B, seq_len, D]
 
-    # Create mask for valid prediction positions
+    # Now z_pred_shifted[0:n_tgt] should match z_tgt[0:n_tgt]
+    # Create valid mask
     pos_idx = jnp.arange(seq_len)[None, :]  # [1, seq_len]
-    pred_mask = (pos_idx >= pred_start[:, None]) & (pos_idx < pred_end[:, None])  # [B, seq_len]
+    valid_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
 
-    # Create mask for valid target positions (first n_tgt in gathered targets)
-    tgt_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
+    # Compute smooth L1 loss
+    diff = z_pred_shifted - z_tgt
+    abs_diff = jnp.abs(diff)
+    smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
 
-    # Both masks should match - predictions at [pred_start:pred_end] correspond to targets at [0:n_tgt]
-    # Shift targets to align: z_tgt[i] should compare to z_pred[pred_start + i]
-    # Easier approach: extract both and compare
-
-    # We'll compute loss over all positions where both pred_mask and tgt_mask are valid
-    # But we need to align them - z_pred[b, pred_start:pred_end] compares to z_tgt[b, 0:n_tgt]
-
-    # Simpler approach: use the mask to compute loss
-    # z_pred at position pred_start + i should match z_tgt at position i
-    # So we shift z_tgt by pred_start for comparison
-
-    def compute_sample_loss(z_p, z_t, ps, pe, nt):
-        """Compute loss for one sample."""
-        # z_p: [seq_len, D], z_t: [seq_len, D]
-        # Compare z_p[ps:pe] with z_t[0:nt]
-        # nt should equal pe - ps
-
-        # Extract relevant slices using dynamic_slice
-        pred_slice = jax.lax.dynamic_slice(z_p, (ps, 0), (seq_len - ps, z_p.shape[-1]))[:nt]
-        tgt_slice = z_t[:nt]
-
-        diff = pred_slice - tgt_slice
-        abs_diff = jnp.abs(diff)
-        smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
-        loss = jnp.mean(smooth_l1)
-        return loss
-
-    # Vectorize over batch
-    losses = jax.vmap(compute_sample_loss)(z_pred, z_tgt, pred_start, pred_end, n_tgt)
-    loss = jnp.mean(losses)
+    # Mean over feature dimension, then masked mean over sequence
+    loss_per_token = jnp.mean(smooth_l1, axis=-1)  # [B, seq_len]
+    loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
 
     return loss
 
