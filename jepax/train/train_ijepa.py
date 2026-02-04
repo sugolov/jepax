@@ -15,6 +15,7 @@ from tqdm import tqdm
 from jepax.config import load_config, to_dict
 from jepax.data import build_dataloader
 from jepax.model import get_ijepa_model, IJEPAMasker
+from jepax.model.masker import mask_to_indices
 from jepax.train.eval_ijepa import evaluate_linear_probe
 
 
@@ -169,10 +170,10 @@ def update_ema(ema_encoder, encoder, decay: float):
 
 @eqx.filter_jit
 def compute_target_reps(ema_encoder, x_b, key):
-    """Compute target representations using EMA encoder (no masking)."""
+    """Compute target representations using EMA encoder (all patches)."""
     keys = jax.random.split(key, x_b.shape[0])
-    # EMA encoder processes all patches (mask=None)
-    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, mask=None, train=False)[0])(keys, x_b)
+    # EMA encoder processes all patches (indices=None)
+    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, indices=None, train=False))(keys, x_b)
     return z_ema
 
 
@@ -184,57 +185,75 @@ def normalize_targets(z_ema):
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
 
 
-@eqx.filter_value_and_grad
-def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
+def masks_to_indices_batch(mask_ctx_b, mask_pred_b):
+    """Convert batch of boolean masks to indices, truncated to batch minimum.
+
+    Args:
+        mask_ctx_b: [B, N_patches] context block masks
+        mask_pred_b: [B, M, N_patches] target block masks
+
+    Returns:
+        ctx_indices: [B, min_n_ctx] context indices (truncated to batch min)
+        tgt_indices: [B, min_n_tgt] target indices (truncated to batch min)
+        min_n_ctx: minimum context count (Python int for static shape)
+        min_n_tgt: minimum target count (Python int for static shape)
+    """
+    n_patches = mask_ctx_b.shape[1]
+
+    # Combine target masks and compute encoder mask (context minus targets)
+    mask_tgt = jnp.any(mask_pred_b, axis=1)  # [B, N_patches]
+    mask_enc = mask_ctx_b & ~mask_tgt  # [B, N_patches]
+
+    # Convert to indices (padded to n_patches)
+    ctx_indices, n_ctx = jax.vmap(lambda m: mask_to_indices(m, n_patches))(mask_enc)
+    tgt_indices, n_tgt = jax.vmap(lambda m: mask_to_indices(m, n_patches))(mask_tgt)
+
+    # Compute min and truncate (Python ints for static shapes in JIT)
+    min_n_ctx = int(jnp.min(n_ctx))
+    min_n_tgt = int(jnp.min(n_tgt))
+
+    ctx_indices = ctx_indices[:, :min_n_ctx]
+    tgt_indices = tgt_indices[:, :min_n_tgt]
+
+    return ctx_indices, tgt_indices, min_n_ctx, min_n_tgt
+
+
+@partial(eqx.filter_value_and_grad)
+def compute_grads(model, x_b, z_ema, ctx_indices, tgt_indices, key):
     """Compute loss and gradients.
 
-    Model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
-    - z_pred: [seq_len, D] - predictions at positions [pred_start:pred_end]
-    - tgt_indices: [seq_len] - indices of target patches, first n_tgt valid
-    - n_tgt: number of target patches
-    - pred_start, pred_end: slice indices for predictions
+    Args:
+        model: IJEPA model
+        x_b: images [B, C, H, W]
+        z_ema: target representations [B, N_patches, D]
+        ctx_indices: context indices [B, N_ctx] - pre-truncated to uniform size
+        tgt_indices: target indices [B, N_tgt] - pre-truncated to uniform size
+        key: random key
     """
     keys = jax.random.split(key, x_b.shape[0])
-    batch_size = x_b.shape[0]
-    seq_len = z_ema.shape[1]  # N_patches
 
-    # Forward pass
-    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-        lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
-    )(keys, x_b, mask_ctx_b, mask_pred_b)
+    # Forward pass - model returns predictions [B, N_tgt, D]
+    z_pred = jax.vmap(
+        lambda k, x, ci, ti: model(k, x, ci, ti, train=True)
+    )(keys, x_b, ctx_indices, tgt_indices)
 
-    z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
+    z_ema = z_ema.astype(jnp.float32)
 
-    # Gather target representations from z_ema
-    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # [B, seq_len, D]
+    # Gather target representations from z_ema at target positions
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # [B, N_tgt, D]
 
-    # Create aligned arrays for comparison:
-    # z_pred has predictions at positions [pred_start:pred_end]
-    # z_tgt has targets at positions [0:n_tgt]
-    # We need to align them
-
-    # Shift z_pred so predictions start at position 0
-    # z_pred_shifted[i] = z_pred[pred_start + i]
-    def shift_pred(z_p, ps):
-        # Roll to bring pred_start to position 0
-        return jnp.roll(z_p, -ps, axis=0)
-
-    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)  # [B, seq_len, D]
-
-    # Now z_pred_shifted[0:n_tgt] should match z_tgt[0:n_tgt]
-    # Create valid mask
-    pos_idx = jnp.arange(seq_len)[None, :]  # [1, seq_len]
-    valid_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
+    # Layer norm on targets (helps prevent collapse)
+    z_tgt = z_tgt - jnp.mean(z_tgt, axis=-1, keepdims=True)
+    z_tgt = z_tgt / jnp.sqrt(jnp.var(z_tgt, axis=-1, keepdims=True) + 1e-6)
 
     # Compute smooth L1 loss
-    diff = z_pred_shifted - z_tgt
+    diff = z_pred - z_tgt
     abs_diff = jnp.abs(diff)
     smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
 
-    # Mean over feature dimension, then masked mean over sequence
-    loss_per_token = jnp.mean(smooth_l1, axis=-1)  # [B, seq_len]
-    loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
+    # Mean over all
+    loss = jnp.mean(smooth_l1)
 
     return loss
 
@@ -388,18 +407,44 @@ def train_ijepa(cfg):
 
     # JIT compiled functions
     @eqx.filter_jit
-    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, key):
-        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, key)
+    def step_model(model, opt_state, x, z_ema, ctx_indices, tgt_indices, key):
+        loss, grads = compute_grads(model, x, z_ema, ctx_indices, tgt_indices, key)
+
+        # Track gradient statistics per block
+        grad_stats = {}
+        enc_blocks = grads.encoder.transformer.blocks
+        for i, block in enumerate(enc_blocks):
+            block_grads = jax.tree.leaves(eqx.filter(block, eqx.is_array))
+            if block_grads:
+                grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in block_grads))
+                grad_stats[f"enc_{i}"] = grad_norm
+
+        pred_blocks = grads.predictor.transformer.blocks
+        for i, block in enumerate(pred_blocks):
+            block_grads = jax.tree.leaves(eqx.filter(block, eqx.is_array))
+            if block_grads:
+                grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in block_grads))
+                grad_stats[f"pred_{i}"] = grad_norm
+
+        grad_stats["total"] = jnp.sqrt(
+            sum(jnp.sum(v**2) for v in grad_stats.values())
+        )
+
         updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         if model_sharding is not None:
-            return eqx.filter_shard((model, opt_state, loss), model_sharding)
-        return model, opt_state, loss
+            return *eqx.filter_shard((model, opt_state, loss), model_sharding), grad_stats
+        return model, opt_state, loss, grad_stats
 
     @partial(jax.jit, static_argnums=(1, 2, 3))
     def generate_masks(key, masker, num_pred_masks, batch_size):
         mask_keys = jax.random.split(key, batch_size)
         return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
+
+    @jax.jit
+    def process_masks(mask_ctx, mask_pred):
+        """Convert boolean masks to indices."""
+        return masks_to_indices_batch(mask_ctx, mask_pred)
 
     # Training loop
     step = start_epoch * steps_per_epoch
@@ -429,6 +474,8 @@ def train_ijepa(cfg):
             mask_ctx, mask_pred = generate_masks(
                 mask_key, masker, mask_cfg.n_pred_masks, data_cfg.batch_size
             )
+            # Convert to indices (truncated to batch min for static shapes)
+            ctx_indices, tgt_indices, min_n_ctx, min_n_tgt = process_masks(mask_ctx, mask_pred)
             mask_time = time.time() - mask_time
 
             x = batch["image"]
@@ -436,14 +483,12 @@ def train_ijepa(cfg):
                 x = x.astype(jnp.bfloat16)
             if data_sharding is not None:
                 x = jax.device_put(x, data_sharding)
-                mask_ctx = jax.device_put(mask_ctx, data_sharding)
-                mask_pred = jax.device_put(mask_pred, data_sharding)
+                ctx_indices = jax.device_put(ctx_indices, data_sharding)
+                tgt_indices = jax.device_put(tgt_indices, data_sharding)
 
-            # Target representations
+            # Target representations (EMA encoder on full images)
             target_time = time.time()
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
-            if getattr(train_cfg, "normalize_targets", False):
-                z_ema = normalize_targets(z_ema)
             target_time = time.time() - target_time
 
             # Debug info on first step
@@ -452,11 +497,13 @@ def train_ijepa(cfg):
                 print(f"model dtype: {model_dtype}")
                 print(f"x: {x.shape}, dtype: {x.dtype}")
                 print(f"z_ema: {z_ema.shape}, dtype: {z_ema.dtype}")
+                print(f"ctx_indices: {ctx_indices.shape}, min_n_ctx: {min_n_ctx}")
+                print(f"tgt_indices: {tgt_indices.shape}, min_n_tgt: {min_n_tgt}")
 
             # Train step
             step_time = time.time()
-            model, opt_state, loss = step_model(
-                model, opt_state, x, z_ema, mask_ctx, mask_pred, step_key
+            model, opt_state, loss, grad_stats = step_model(
+                model, opt_state, x, z_ema, ctx_indices, tgt_indices, step_key
             )
             # EMA with linear schedule
             ema_decay = ema_start + (ema_end - ema_start) * (step / total_steps)
@@ -465,8 +512,8 @@ def train_ijepa(cfg):
             step_time = time.time() - step_time
 
             # Mask counts for logging
-            mask_a = int(jnp.sum(mask_ctx[0]))  # context patches
-            mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))  # target patches
+            mask_a = min_n_ctx  # context patches (visible to encoder)
+            mask_b = min_n_tgt  # target patches
 
             # Profile end
             if prof_cfg.enabled and step == prof_cfg.end_step:
@@ -495,6 +542,7 @@ def train_ijepa(cfg):
                             "ema_decay": ema_decay,
                             "mask_a": mask_a,
                             "mask_b": mask_b,
+                            **{f"grad/{k}": float(v) for k, v in grad_stats.items()},
                         },
                         step=step,
                     )

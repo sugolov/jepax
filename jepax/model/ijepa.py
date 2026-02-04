@@ -1,7 +1,7 @@
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Key, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from jepax.model.transformer import (
     PositionalEncoding2D,
@@ -30,7 +30,6 @@ ijepa_predictor_configs = {
     "test": {"latent_dim": 32, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
 }
 
-# Combined IJEPA configs (encoder_name, predictor_name)
 ijepa_configs = {
     "ijepa-ti": ("vit-ti", "pred-ti"),
     "ijepa-s": ("vit-s", "pred-s"),
@@ -78,7 +77,7 @@ def get_predictor_config(
         )
     return {
         **ijepa_predictor_configs[name],
-        "dim": enc_dim,  # predictor input dim must match encoder output
+        "dim": enc_dim,
         "grid_size": grid_size,
         "p_drop": p_drop,
         "seq_len": seq_len,
@@ -132,28 +131,14 @@ def get_ijepa_model(
     return model, enc_config["dim"]
 
 
-def mask_to_indices(mask: Array, max_len: int) -> tuple[Array, int]:
-    """Convert boolean mask to padded indices array.
-
-    Args:
-        mask: boolean mask [N] where True = keep
-        max_len: pad indices to this length
-
-    Returns:
-        indices: [max_len] indices of True positions, padded with 0s
-        n_keep: number of True positions
-    """
-    indices = jnp.where(mask, size=max_len, fill_value=0)[0]
-    n_keep = jnp.sum(mask)
-    return indices, n_keep
-
-
 class IJEPAEncoder(eqx.Module):
+    """I-JEPA Encoder - processes only visible patches via gather."""
+
     embed: PatchEmbedding
     transformer: Transformer
     pe: PositionalEncoding2D
     dim: int = eqx.field(static=True)
-    seq_len: int = eqx.field(static=True)
+    grid_size: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -163,9 +148,9 @@ class IJEPAEncoder(eqx.Module):
         dim: int,
         num_layers: int,
         num_head: int,
-        mlp_ratio: float = 3.0,
-        p_drop: float = 0.1,
-        seq_len: int = 2048,
+        mlp_ratio: float = 4.0,
+        p_drop: float = 0.0,
+        seq_len: int = 256,
         *,
         key: PRNGKeyArray,
     ):
@@ -185,60 +170,38 @@ class IJEPAEncoder(eqx.Module):
         )
         self.pe = PositionalEncoding2D(dim=dim, seq_len=seq_len, grid_size=grid_size)
         self.dim = dim
-        self.seq_len = seq_len
+        self.grid_size = grid_size
 
-    def __call__(
-        self, key, x, mask=None, train=True, get_intermediates=False
-    ):
+    def get_pos_embed(self):
+        """Get full positional embeddings [N_patches, D]."""
+        return self.pe._get_pe_from_grid(self.pe.grid)
+
+    def __call__(self, key, x, indices=None, train=True):
         """
         Args:
-            x: image [H, W, C]
-            mask: boolean mask [N_patches] where True = visible context patch (flattened)
+            x: image [C, H, W]
+            indices: patch indices to keep [N_keep], or None for all patches
+
+        Returns:
+            out: encoder output [N_keep, D] or [N_patches, D]
         """
         x = self.embed(x)  # [N_patches, D]
-        n_patches = x.shape[0]
+        pos_emb = self.get_pos_embed()  # [N_patches, D]
 
-        if mask is not None:
-            mask_flat = mask.reshape(-1)  # Ensure 1D
-            indices, n_keep = mask_to_indices(mask_flat, n_patches)
+        if indices is not None:
+            # Gather only visible patches and their positions
+            x = x[indices]  # [N_keep, D]
+            pos_emb = pos_emb[indices]  # [N_keep, D]
 
-            # Gather visible patches
-            x_gathered = x[indices]  # [n_patches, D] but only first n_keep are valid
+        x = x + pos_emb
 
-            # Add positional embeddings for the gathered positions
-            pos_emb = self.pe._get_pe_from_grid(self.pe.grid)  # [N_patches, D]
-            pos_gathered = pos_emb[indices]
-            x_gathered = x_gathered + pos_gathered
-
-            # Zero out padding positions (indices beyond n_keep point to arbitrary positions)
-            valid_mask = jnp.arange(n_patches) < n_keep
-            x_gathered = jnp.where(valid_mask[:, None], x_gathered, 0.0)
-
-            # Attention mask: only attend to first n_keep positions
-            attn_mask = valid_mask[:, None] & valid_mask[None, :]
-        else:
-            # No masking - process all patches
-            x_gathered = self.pe(x)
-            attn_mask = None
-            n_keep = n_patches
-            indices = jnp.arange(n_patches)
-
-        out = self.transformer(
-            x_gathered,
-            attn_mask=attn_mask,
-            key=key,
-            train=train,
-            use_pe=False,  # We already added PE
-            get_intermediates=get_intermediates,
-        )
-
-        if get_intermediates:
-            out, intermediates = out
-            return out, intermediates, indices, n_keep
-        return out, indices, n_keep
+        out = self.transformer(x, key=key, train=train, use_pe=False)
+        return out
 
 
 class IJEPAPredictor(eqx.Module):
+    """I-JEPA Predictor - concat [context + pos, mask_token + tgt_pos]."""
+
     in_proj: eqx.nn.Linear
     out_proj: eqx.nn.Linear
     transformer: Transformer
@@ -247,6 +210,7 @@ class IJEPAPredictor(eqx.Module):
     norm: eqx.nn.LayerNorm
     dim: int = eqx.field(static=True)
     latent_dim: int = eqx.field(static=True)
+    grid_size: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -255,9 +219,9 @@ class IJEPAPredictor(eqx.Module):
         grid_size: int,
         num_layers: int,
         num_head: int,
-        mlp_ratio: float = 3.0,
-        p_drop: float = 0.1,
-        seq_len: int = 2048,
+        mlp_ratio: float = 4.0,
+        p_drop: float = 0.0,
+        seq_len: int = 256,
         *,
         key: PRNGKeyArray,
     ):
@@ -274,80 +238,66 @@ class IJEPAPredictor(eqx.Module):
             key=k2,
             causal=False,
         )
-        self.pred_token = jax.random.normal(k3, (1, latent_dim)) * 0.02
+        self.pred_token = jax.random.normal(k3, (latent_dim,)) * 0.02
         self.out_proj = eqx.nn.Linear(latent_dim, dim, key=k4)
-        self.pe = PositionalEncoding2D(
-            dim=latent_dim, seq_len=seq_len, grid_size=grid_size
-        )
+        self.pe = PositionalEncoding2D(dim=latent_dim, seq_len=seq_len, grid_size=grid_size)
         self.norm = eqx.nn.LayerNorm(latent_dim)
         self.dim = dim
         self.latent_dim = latent_dim
+        self.grid_size = grid_size
+
+    def get_pos_embed(self):
+        """Get full positional embeddings [N_patches, latent_dim]."""
+        return self.pe._get_pe_from_grid(self.pe.grid)
 
     def __call__(
         self,
         key,
-        ctx_emb: Float[Array, "N D"],
+        ctx_emb: Float[Array, "N_ctx D"],
         ctx_indices: Array,
-        n_ctx: int,
         tgt_indices: Array,
-        n_tgt: int,
-        seq_len: int,
         train=True,
     ):
         """
         Args:
-            ctx_emb: context embeddings from encoder [seq_len, D], first n_ctx valid
-            ctx_indices: original patch indices for context [seq_len]
-            n_ctx: number of valid context tokens
-            tgt_indices: target patch indices [seq_len], first n_tgt valid
-            n_tgt: number of target tokens
-            seq_len: sequence length for padding
+            ctx_emb: context embeddings from encoder [N_ctx, D]
+            ctx_indices: original patch indices for context [N_ctx]
+            tgt_indices: target patch indices [N_tgt]
+
+        Returns:
+            preds: predictions for target positions [N_tgt, D]
         """
+        n_ctx = ctx_emb.shape[0]
+        n_tgt = tgt_indices.shape[0]
+
         # Project context to predictor dimension
-        ctx_proj = jax.vmap(self.in_proj)(ctx_emb)  # [seq_len, latent_dim]
+        ctx_proj = jax.vmap(self.in_proj)(ctx_emb)  # [N_ctx, latent_dim]
 
         # Add positional embeddings for context positions
-        pos_emb_full = self.pe._get_pe_from_grid(self.pe.grid)  # [N_patches, latent_dim]
-        ctx_pos = pos_emb_full[ctx_indices]  # [seq_len, latent_dim]
+        pos_emb = self.get_pos_embed()  # [N_patches, latent_dim]
+        ctx_pos = pos_emb[ctx_indices]  # [N_ctx, latent_dim]
         ctx_proj = ctx_proj + ctx_pos
 
         # Create pred_tokens with target positional embeddings
-        tgt_pos = pos_emb_full[tgt_indices]  # [seq_len, latent_dim]
-        pred_tokens = self.pred_token + tgt_pos  # [seq_len, latent_dim]
+        tgt_pos = pos_emb[tgt_indices]  # [N_tgt, latent_dim]
+        pred_tokens = self.pred_token + tgt_pos  # [N_tgt, latent_dim] (broadcast)
 
-        # Concatenate: [context (n_ctx), pred_tokens (n_tgt), padding]
-        # We'll interleave: first n_ctx context, then n_tgt pred_tokens
-        total_valid = n_ctx + n_tgt
+        # Concatenate: [context, pred_tokens]
+        combined = jnp.concatenate([ctx_proj, pred_tokens], axis=0)  # [N_ctx + N_tgt, latent_dim]
 
-        # Build combined sequence
-        combined = jnp.zeros((seq_len, self.latent_dim))
+        # Run transformer (no extra positional encoding - already added)
+        out = self.transformer(combined, key=key, train=train, use_pe=False)
 
-        # Place context tokens (first n_ctx positions)
-        ctx_mask = jnp.arange(seq_len) < n_ctx
-        combined = jnp.where(ctx_mask[:, None], ctx_proj, combined)
-
-        # Place pred_tokens (positions n_ctx to n_ctx + n_tgt)
-        tgt_mask = (jnp.arange(seq_len) >= n_ctx) & (jnp.arange(seq_len) < total_valid)
-        # Shift pred_tokens indices to get the right ones
-        tgt_shifted_idx = jnp.clip(jnp.arange(seq_len) - n_ctx, 0, seq_len - 1)
-        pred_tokens_shifted = pred_tokens[tgt_shifted_idx]
-        combined = jnp.where(tgt_mask[:, None], pred_tokens_shifted, combined)
-
-        # Attention mask: only attend to first total_valid positions
-        valid_mask = jnp.arange(seq_len) < total_valid
-        attn_mask = valid_mask[:, None] & valid_mask[None, :]
-
-        # Run transformer
-        out = self.transformer(combined, attn_mask=attn_mask, key=key, train=train, use_pe=False)
-
-        # Apply final layer norm (like reference)
+        # Apply layer norm
         out = jax.vmap(self.norm)(out)
 
         # Project back to encoder dimension
         out = jax.vmap(self.out_proj)(out)
 
-        # Return predictions at target positions (n_ctx to n_ctx + n_tgt)
-        return out, n_ctx, total_valid
+        # Return only predictions for target positions (last N_tgt)
+        preds = out[n_ctx:]  # [N_tgt, D]
+
+        return preds
 
 
 class IJEPA(eqx.Module):
@@ -358,37 +308,28 @@ class IJEPA(eqx.Module):
         self.encoder = encoder
         self.predictor = predictor
 
-    def __call__(self, key: Key, x: Array, mask_ctx, mask_pred, train=True):
+    def __call__(self, key, x: Array, ctx_indices: Array, tgt_indices: Array, train=True):
         """
         Args:
-            x: image [H, W, C]
-            mask_ctx: context block mask [N_patches], True = in context block (flattened)
-            mask_pred: target masks [M, N_patches], True = target position (flattened)
+            x: image [C, H, W]
+            ctx_indices: context patch indices [N_ctx]
+            tgt_indices: target patch indices [N_tgt]
+
+        Returns:
+            preds: predictions for target positions [N_tgt, D]
         """
         k1, k2 = jax.random.split(key, 2)
 
-        # Encoder mask: context minus targets
-        mask_tgt = jnp.any(mask_pred, axis=0)  # [N_patches]
-        mask_enc = mask_ctx & ~mask_tgt  # [N_patches]
+        # Encode visible context patches only
+        z_ctx = self.encoder(k1, x, indices=ctx_indices, train=train)  # [N_ctx, D]
 
-        # Encode visible context patches
-        z_enc, ctx_indices, n_ctx = self.encoder(k1, x, mask_enc, train=train)
-
-        # Get target indices
-        tgt_flat = mask_tgt.flatten()
-        n_patches = tgt_flat.shape[0]
-        tgt_indices, n_tgt = mask_to_indices(tgt_flat, n_patches)
-
-        # Predict
-        z_pred, pred_start, pred_end = self.predictor(
+        # Predict target representations
+        preds = self.predictor(
             k2,
-            ctx_emb=z_enc,
+            ctx_emb=z_ctx,
             ctx_indices=ctx_indices,
-            n_ctx=n_ctx,
             tgt_indices=tgt_indices,
-            n_tgt=n_tgt,
-            seq_len=n_patches,
             train=train,
-        )
+        )  # [N_tgt, D]
 
-        return z_pred, tgt_indices, n_tgt, pred_start, pred_end
+        return preds

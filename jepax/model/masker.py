@@ -36,6 +36,24 @@ def set_token_mask(tokens, mask, mask_vec):
     return jnp.where(mask[..., None], tokens, mask_vec)
 
 
+def mask_to_indices(mask: jnp.ndarray, max_len: int = None) -> tuple:
+    """Convert boolean mask to indices array.
+
+    Args:
+        mask: boolean mask [N] where True = keep
+        max_len: pad indices to this length (default: mask length)
+
+    Returns:
+        indices: indices of True positions, padded with 0s to max_len
+        n_keep: number of True positions
+    """
+    if max_len is None:
+        max_len = mask.shape[0]
+    indices = jnp.where(mask, size=max_len, fill_value=0)[0]
+    n_keep = jnp.sum(mask)
+    return indices, n_keep
+
+
 class IJEPAMasker:
     def __init__(
         self,
