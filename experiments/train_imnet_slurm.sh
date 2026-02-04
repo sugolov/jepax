@@ -26,9 +26,10 @@ if [[ "$UBUNTU_VERSION" == "24"* ]]; then
     VENV_PATH="/mnt/data0/shared/owen/venv24"
     echo "Using Ubuntu 24 venv: $VENV_PATH"
 
-    # Create venv if it doesn't exist
-    if [ ! -d "$VENV_PATH" ]; then
+    # Create venv if it doesn't exist or is invalid
+    if [ ! -f "$VENV_PATH/bin/activate" ]; then
         echo "Creating new venv for Ubuntu 24..."
+        rm -rf "$VENV_PATH"
         python3 -m venv "$VENV_PATH"
         source "$VENV_PATH/bin/activate"
         pip install --upgrade pip
