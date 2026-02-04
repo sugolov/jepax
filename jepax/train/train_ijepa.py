@@ -169,10 +169,9 @@ def update_ema(ema_encoder, encoder, decay: float):
 
 
 @eqx.filter_jit
-def compute_target_reps(ema_encoder, x_b, key):
+def compute_target_reps(ema_encoder, x_b, keys):
     """Compute target representations using EMA encoder (all patches)."""
-    # Use same key for all (train=False so no dropout anyway)
-    z_ema = jax.vmap(lambda x: ema_encoder(key, x, indices=None, train=False))(x_b)
+    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, indices=None, train=False))(keys, x_b)
     return z_ema
 
 
@@ -218,7 +217,7 @@ def masks_to_indices_batch(mask_ctx_b, mask_pred_b):
 
 
 @partial(eqx.filter_value_and_grad)
-def compute_grads(model, x_b, z_ema, ctx_indices, tgt_indices, key):
+def compute_grads(model, x_b, z_ema, ctx_indices, tgt_indices, keys):
     """Compute loss and gradients.
 
     Args:
@@ -227,13 +226,12 @@ def compute_grads(model, x_b, z_ema, ctx_indices, tgt_indices, key):
         z_ema: target representations [B, N_patches, D]
         ctx_indices: context indices [B, N_ctx] - pre-truncated to uniform size
         tgt_indices: target indices [B, N_tgt] - pre-truncated to uniform size
-        key: random key
+        keys: random keys [B, 2] - pre-split and sharded
     """
     # Forward pass - model returns predictions [B, N_tgt, D]
-    # Use same key for all samples (avoids sharding mismatch, dropout pattern shared)
     z_pred = jax.vmap(
-        lambda x, ci, ti: model(key, x, ci, ti, train=True)
-    )(x_b, ctx_indices, tgt_indices)
+        lambda k, x, ci, ti: model(k, x, ci, ti, train=True)
+    )(keys, x_b, ctx_indices, tgt_indices)
 
     z_pred = z_pred.astype(jnp.float32)
     z_ema = z_ema.astype(jnp.float32)
@@ -405,8 +403,8 @@ def train_ijepa(cfg):
 
     # JIT compiled functions
     @eqx.filter_jit
-    def step_model(model, opt_state, x, z_ema, ctx_indices, tgt_indices, key):
-        loss, grads = compute_grads(model, x, z_ema, ctx_indices, tgt_indices, key)
+    def step_model(model, opt_state, x, z_ema, ctx_indices, tgt_indices, keys):
+        loss, grads = compute_grads(model, x, z_ema, ctx_indices, tgt_indices, keys)
 
         # Track gradient statistics per block
         grad_stats = {}
@@ -478,14 +476,22 @@ def train_ijepa(cfg):
             x = batch["image"]
             if cfg.bfloat16:
                 x = x.astype(jnp.bfloat16)
+
+            # Split keys for batch (before sharding)
+            batch_size = x.shape[0]
+            ema_keys = jax.random.split(ema_key, batch_size)
+            step_keys = jax.random.split(step_key, batch_size)
+
             if data_sharding is not None:
                 x = jax.device_put(x, data_sharding)
                 ctx_indices = jax.device_put(ctx_indices, data_sharding)
                 tgt_indices = jax.device_put(tgt_indices, data_sharding)
+                ema_keys = jax.device_put(ema_keys, data_sharding)
+                step_keys = jax.device_put(step_keys, data_sharding)
 
             # Target representations (EMA encoder on full images)
             target_time = time.time()
-            z_ema = compute_target_reps(ema_encoder, x, ema_key)
+            z_ema = compute_target_reps(ema_encoder, x, ema_keys)
             target_time = time.time() - target_time
 
             # Debug info on first step
@@ -500,7 +506,7 @@ def train_ijepa(cfg):
             # Train step
             step_time = time.time()
             model, opt_state, loss, grad_stats = step_model(
-                model, opt_state, x, z_ema, ctx_indices, tgt_indices, step_key
+                model, opt_state, x, z_ema, ctx_indices, tgt_indices, step_keys
             )
             # EMA with linear schedule
             ema_decay = ema_start + (ema_end - ema_start) * (step / total_steps)
