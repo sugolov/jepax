@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
 #SBATCH --time=172:00:00
-#SBATCH --exclude=hyperplane-3,hyperplane-4,tinybox
+#SBATCH --exclude=hyperplane-4,tinybox
 
 # Usage: WANDB_API_KEY=xxx sbatch train_imnet_slurm.sh
 
