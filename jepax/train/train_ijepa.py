@@ -171,9 +171,8 @@ def update_ema(ema_encoder, encoder, decay: float):
 @eqx.filter_jit
 def compute_target_reps(ema_encoder, x_b, key):
     """Compute target representations using EMA encoder (all patches)."""
-    keys = jax.random.split(key, x_b.shape[0])
-    # EMA encoder processes all patches (indices=None)
-    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, indices=None, train=False))(keys, x_b)
+    # Use same key for all (train=False so no dropout anyway)
+    z_ema = jax.vmap(lambda x: ema_encoder(key, x, indices=None, train=False))(x_b)
     return z_ema
 
 
@@ -230,12 +229,11 @@ def compute_grads(model, x_b, z_ema, ctx_indices, tgt_indices, key):
         tgt_indices: target indices [B, N_tgt] - pre-truncated to uniform size
         key: random key
     """
-    keys = jax.random.split(key, x_b.shape[0])
-
     # Forward pass - model returns predictions [B, N_tgt, D]
+    # Use same key for all samples (avoids sharding mismatch, dropout pattern shared)
     z_pred = jax.vmap(
-        lambda k, x, ci, ti: model(k, x, ci, ti, train=True)
-    )(keys, x_b, ctx_indices, tgt_indices)
+        lambda x, ci, ti: model(key, x, ci, ti, train=True)
+    )(x_b, ctx_indices, tgt_indices)
 
     z_pred = z_pred.astype(jnp.float32)
     z_ema = z_ema.astype(jnp.float32)
