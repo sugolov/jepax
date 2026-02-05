@@ -170,61 +170,6 @@ def normalize_targets(z_ema):
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
 
 
-@eqx.filter_value_and_grad
-def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
-    """Compute loss and gradients.
-
-    Model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
-    - z_pred: [seq_len, D] - predictions at positions [pred_start:pred_end]
-    - tgt_indices: [seq_len] - indices of target patches, first n_tgt valid
-    - n_tgt: number of target patches
-    - pred_start, pred_end: slice indices for predictions
-    """
-    keys = jax.random.split(key, x_b.shape[0])
-    batch_size = x_b.shape[0]
-    seq_len = z_ema.shape[1]  # N_patches
-
-    # Forward pass
-    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-        lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
-    )(keys, x_b, mask_ctx_b, mask_pred_b)
-
-    z_ema = z_ema.astype(jnp.float32)
-    z_pred = z_pred.astype(jnp.float32)
-
-    # Gather target representations from z_ema
-    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # [B, seq_len, D]
-
-    # Create aligned arrays for comparison:
-    # z_pred has predictions at positions [pred_start:pred_end]
-    # z_tgt has targets at positions [0:n_tgt]
-    # We need to align them
-
-    # Shift z_pred so predictions start at position 0
-    # z_pred_shifted[i] = z_pred[pred_start + i]
-    def shift_pred(z_p, ps):
-        # Roll to bring pred_start to position 0
-        return jnp.roll(z_p, -ps, axis=0)
-
-    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)  # [B, seq_len, D]
-
-    # Now z_pred_shifted[0:n_tgt] should match z_tgt[0:n_tgt]
-    # Create valid mask
-    pos_idx = jnp.arange(seq_len)[None, :]  # [1, seq_len]
-    valid_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
-
-    # Compute smooth L1 loss
-    diff = z_pred_shifted - z_tgt
-    abs_diff = jnp.abs(diff)
-    smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
-
-    # Mean over feature dimension, then masked mean over sequence
-    loss_per_token = jnp.mean(smooth_l1, axis=-1)  # [B, seq_len]
-    loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
-
-    return loss
-
-
 def train_ijepa(cfg):
     """Main training function."""
     # Unpack config sections
@@ -372,13 +317,49 @@ def train_ijepa(cfg):
             (model, ema_encoder, opt_state), model_sharding
         )
 
+    # Helper to match key sharding to data sharding for vmap compatibility
+    def shard_keys(keys):
+        if data_sharding is not None:
+            return jax.lax.with_sharding_constraint(keys, data_sharding)
+        return keys
+
     # JIT compiled functions
+    @eqx.filter_value_and_grad
+    def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
+        keys = shard_keys(jax.random.split(key, x_b.shape[0]))
+        seq_len = z_ema.shape[1]
+
+        z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
+            lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
+        )(keys, x_b, mask_ctx_b, mask_pred_b)
+
+        z_ema = z_ema.astype(jnp.float32)
+        z_pred = z_pred.astype(jnp.float32)
+
+        z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)
+
+        def shift_pred(z_p, ps):
+            return jnp.roll(z_p, -ps, axis=0)
+
+        z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
+
+        pos_idx = jnp.arange(seq_len)[None, :]
+        valid_mask = pos_idx < n_tgt[:, None]
+
+        diff = z_pred_shifted - z_tgt
+        abs_diff = jnp.abs(diff)
+        smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
+
+        loss_per_token = jnp.mean(smooth_l1, axis=-1)
+        loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
+        return loss
+
     @eqx.filter_jit
     def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, key):
         k1, k2 = jax.random.split(key)
 
         # Target representations (no grad through EMA encoder)
-        ema_keys = jax.random.split(k1, x.shape[0])
+        ema_keys = shard_keys(jax.random.split(k1, x.shape[0]))
         z_ema = jax.vmap(
             lambda k, img: ema_encoder(k, img, mask=None, train=False)[0]
         )(ema_keys, x)
