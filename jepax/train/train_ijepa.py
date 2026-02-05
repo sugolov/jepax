@@ -8,6 +8,7 @@ from pathlib import Path
 import equinox as eqx
 import jax
 import jax.sharding as jshard
+import numpy as np
 import optax
 from jax import numpy as jnp
 from tqdm import tqdm
@@ -226,9 +227,10 @@ def train_ijepa(cfg):
     print(f"JAX devices: {jax.devices()}")
     num_devices = len(jax.devices())
 
-    # Sharding setup
+    # Sharding setup (use Mesh directly for Auto axis types — jax.make_mesh
+    # creates Explicit axes in newer JAX which breaks vmap + reshape)
     if cfg.shard and num_devices > 1:
-        mesh = jax.make_mesh((num_devices,), ("batch",))
+        mesh = jshard.Mesh(np.array(jax.devices()), ("batch",))
         data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
         model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
     else:
