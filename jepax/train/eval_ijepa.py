@@ -1,8 +1,7 @@
 """Linear probe evaluation for I-JEPA.
 
-Two modes:
-- paper: LARS optimizer, optionally with BatchNorm, tests last-layer and concat-4
-- simple: sklearn LogisticRegression on last-layer only
+Paper protocol: test (last-layer / concat-4) × (with / without BN), report best.
+Uses LARS with step-wise LR decay (÷10 every 15 epochs) following MAE.
 """
 import gc
 import warnings
@@ -12,7 +11,6 @@ import jax
 import numpy as np
 import optax
 from jax import numpy as jnp
-from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -158,12 +156,24 @@ def _train_probe_paper(
         probe = LinearProbe(input_dim, num_classes, key=init_key)
         state = None
 
+    # Step-wise LR decay: ÷10 every 15 epochs (following MAE/I-JEPA paper)
+    n_train = len(train_feats)
+    steps_per_epoch = max(1, (n_train + batch_size - 1) // batch_size)
+    lr_schedule = optax.piecewise_constant_schedule(
+        init_value=lr,
+        boundaries_and_scales={
+            15 * steps_per_epoch: 0.1,
+            30 * steps_per_epoch: 0.1,
+            45 * steps_per_epoch: 0.1,
+        },
+    )
+
     if optim.lower() == "lars":
-        optimizer = optax.lars(lr, weight_decay=weight_decay)
+        optimizer = optax.lars(lr_schedule, weight_decay=weight_decay)
     elif optim.lower() in ["adam", "adamw"]:
-        optimizer = optax.adamw(lr, weight_decay=weight_decay)
+        optimizer = optax.adamw(lr_schedule, weight_decay=weight_decay)
     else:
-        optimizer = optax.sgd(lr)
+        optimizer = optax.sgd(lr_schedule)
 
     opt_state = optimizer.init(eqx.filter(probe, eqx.is_array))
 
@@ -192,7 +202,6 @@ def _train_probe_paper(
         probe = eqx.apply_updates(probe, updates)
         return probe, opt_state, loss
 
-    n_train = len(train_feats)
     for _ in range(n_epochs):
         perm = np.random.permutation(n_train)
         for i in range(0, n_train, batch_size):
@@ -235,7 +244,7 @@ def evaluate_linear_probe(
     val_loader,
     num_classes,
     key,
-    mode="paper",
+    mode="last",
     n_concat=4,
     n_epochs=50,
     lr=0.1,
@@ -250,65 +259,43 @@ def evaluate_linear_probe(
     """Evaluate linear probe.
 
     Args:
-        mode: "paper" (LARS + BN option, test last & concat) or "simple" (sklearn)
+        mode: "last" (avg-pooled last layer), "last_bn" (with BatchNorm),
+              "concat" (concat last n layers), "concat_bn", or "simple" (sklearn)
     """
     key, k1, k2 = jax.random.split(key, 3)
+    use_concat = mode.startswith("concat")
+    use_bn = mode.endswith("_bn")
 
     if verbose:
-        print("Probe: extracting train features")
-    train_last, train_concat, train_labels = extract_features(
-        encoder, train_loader, k1, max_train_samples, n_concat if mode == "paper" else 1
+        print(f"Probe: extracting features (mode={mode})")
+    train_feats, train_concat, train_labels = extract_features(
+        encoder, train_loader, k1, max_train_samples, n_concat if use_concat else 1
+    )
+    val_feats, val_concat, val_labels = extract_features(
+        encoder, val_loader, k2, max_val_samples, n_concat if use_concat else 1
     )
 
-    if verbose:
-        print("Probe: extracting val features")
-    val_last, val_concat, val_labels = extract_features(
-        encoder, val_loader, k2, max_val_samples, n_concat if mode == "paper" else 1
-    )
+    if use_concat:
+        train_feats = train_concat
+        val_feats = val_concat
+        input_dim = embed_dim * n_concat
+    else:
+        input_dim = embed_dim
 
     if verbose:
-        shapes = f"train {train_last.shape}, val {val_last.shape}"
-        if train_concat is not None:
-            shapes += f" (concat: {train_concat.shape})"
-        print(f"Probe: {shapes}")
+        print(f"Probe: train {train_feats.shape}, val {val_feats.shape}")
 
     if mode == "simple":
-        if verbose:
-            print("Probe: sklearn logistic regression")
-        top1, top5 = _eval_simple(train_last, train_labels, val_last, val_labels)
-        return {"top1": top1, "top5": top5}
-
-    # Paper mode: test multiple configurations, report best
-    results = {}
-    best_top1, best_top5 = 0.0, 0.0
-
-    configs = [
-        ("last", train_last, val_last, embed_dim, False),
-        ("last_bn", train_last, val_last, embed_dim, True),
-    ]
-    if train_concat is not None:
-        configs.extend([
-            ("concat", train_concat, val_concat, embed_dim * n_concat, False),
-            ("concat_bn", train_concat, val_concat, embed_dim * n_concat, True),
-        ])
-
-    for name, tr_f, val_f, dim, use_bn in configs:
-        if verbose:
-            print(f"Probe: training {name}")
+        top1, top5 = _eval_simple(train_feats, train_labels, val_feats, val_labels)
+    else:
         key, subkey = jax.random.split(key)
-        t1, t5 = _train_probe_paper(
-            tr_f, train_labels, val_f, val_labels,
-            dim, num_classes, subkey,
+        top1, top5 = _train_probe_paper(
+            train_feats, train_labels, val_feats, val_labels,
+            input_dim, num_classes, subkey,
             n_epochs, lr, batch_size, optim, weight_decay, use_bn,
         )
-        results[f"{name}_top1"] = t1
-        results[f"{name}_top5"] = t5
-        best_top1 = max(best_top1, t1)
-        best_top5 = max(best_top5, t5)
-        if verbose:
-            print(f"  {name}: top1={t1*100:.2f}%, top5={t5*100:.2f}%")
 
-    # Best across all configs (for printing/summary)
-    results["top1"] = best_top1
-    results["top5"] = best_top5
-    return results
+    if verbose:
+        print(f"  top1={top1*100:.2f}%, top5={top5*100:.2f}%")
+
+    return {"top1": top1, "top5": top5}

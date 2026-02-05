@@ -137,21 +137,19 @@ def eval_probe(
         train_loader=train_loader,
         val_loader=val_loader,
         num_classes=num_classes,
-        mode=getattr(cfg_eval, "mode", "paper"),
+        mode=getattr(cfg_eval, "mode", "last"),
         batch_size=cfg_eval.batch_size,
         optim=cfg_eval.optim,
         key=key,
         lr=cfg_eval.lr,
-        n_concat=cfg_eval.n_concat,
+        n_concat=getattr(cfg_eval, "n_concat", 4),
         n_epochs=cfg_eval.epochs,
         max_train_samples=cfg_eval.train_samples,
         max_val_samples=cfg_eval.val_samples,
         weight_decay=cfg_eval.wd,
     )
 
-    # Build log dict - exclude top1/top5 summary (already have individual results)
-    log_result = {k: v for k, v in eval_result.items() if k not in ("top1", "top5")}
-    return eval_result, log_result
+    return eval_result
 
 
 @eqx.filter_jit
@@ -515,7 +513,7 @@ def train_ijepa(cfg):
             probe_time = time.time()
             key, eval_key = jax.random.split(key)
             print("Running linear probe evaluation...")
-            eval_result, log_result = eval_probe(
+            eval_result = eval_probe(
                 encoder=ema_encoder,
                 embed_dim=embed_dim,
                 train_loader=dataloader,
@@ -535,8 +533,9 @@ def train_ijepa(cfg):
                 import wandb
                 wandb.log(
                     {
+                        "probe/top1": top1 * 100,
+                        "probe/top5": top5 * 100,
                         "probe/time_s": probe_time,
-                        **{f"probe/{k}": v * 100 for k, v in log_result.items()},
                     },
                     step=step,
                 )
