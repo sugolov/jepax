@@ -163,11 +163,50 @@ def update_ema(ema_encoder, encoder, decay: float):
     return eqx.combine(new_ema_params, ema_static)
 
 
+@eqx.filter_jit
+def compute_target_reps(ema_encoder, x_b, keys):
+    """Compute target representations. Keys must be pre-split [B, ...]."""
+    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, mask=None, train=False)[0])(keys, x_b)
+    return z_ema
+
+
+@eqx.filter_jit
 def normalize_targets(z_ema):
     """Layer norm on targets (prevents collapse)."""
     mean = jnp.mean(z_ema, axis=-1, keepdims=True)
     var = jnp.var(z_ema, axis=-1, keepdims=True)
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
+
+
+@eqx.filter_value_and_grad
+def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, keys):
+    """Compute loss and gradients. Keys must be pre-split [B, ...]."""
+    seq_len = z_ema.shape[1]
+
+    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
+        lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
+    )(keys, x_b, mask_ctx_b, mask_pred_b)
+
+    z_ema = z_ema.astype(jnp.float32)
+    z_pred = z_pred.astype(jnp.float32)
+
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)
+
+    def shift_pred(z_p, ps):
+        return jnp.roll(z_p, -ps, axis=0)
+
+    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
+
+    pos_idx = jnp.arange(seq_len)[None, :]
+    valid_mask = pos_idx < n_tgt[:, None]
+
+    diff = z_pred_shifted - z_tgt
+    abs_diff = jnp.abs(diff)
+    smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
+
+    loss_per_token = jnp.mean(smooth_l1, axis=-1)
+    loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
+    return loss
 
 
 def train_ijepa(cfg):
@@ -317,57 +356,10 @@ def train_ijepa(cfg):
             (model, ema_encoder, opt_state), model_sharding
         )
 
-    # Helper to match key sharding to data sharding for vmap compatibility
-    def shard_keys(keys):
-        if data_sharding is not None:
-            return jax.lax.with_sharding_constraint(keys, data_sharding)
-        return keys
-
-    # JIT compiled functions
-    @eqx.filter_value_and_grad
-    def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
-        keys = shard_keys(jax.random.split(key, x_b.shape[0]))
-        seq_len = z_ema.shape[1]
-
-        z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-            lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
-        )(keys, x_b, mask_ctx_b, mask_pred_b)
-
-        z_ema = z_ema.astype(jnp.float32)
-        z_pred = z_pred.astype(jnp.float32)
-
-        z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)
-
-        def shift_pred(z_p, ps):
-            return jnp.roll(z_p, -ps, axis=0)
-
-        z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
-
-        pos_idx = jnp.arange(seq_len)[None, :]
-        valid_mask = pos_idx < n_tgt[:, None]
-
-        diff = z_pred_shifted - z_tgt
-        abs_diff = jnp.abs(diff)
-        smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
-
-        loss_per_token = jnp.mean(smooth_l1, axis=-1)
-        loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
-        return loss
-
+    # JIT compiled step function
     @eqx.filter_jit
-    def step_model(model, ema_encoder, opt_state, x, mask_ctx, mask_pred, key):
-        k1, k2 = jax.random.split(key)
-
-        # Target representations (no grad through EMA encoder)
-        ema_keys = shard_keys(jax.random.split(k1, x.shape[0]))
-        z_ema = jax.vmap(
-            lambda k, img: ema_encoder(k, img, mask=None, train=False)[0]
-        )(ema_keys, x)
-        z_ema = jax.lax.stop_gradient(z_ema)
-        if normalize_tgt:
-            z_ema = normalize_targets(z_ema)
-
-        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, k2)
+    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, keys):
+        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, keys)
         updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         if model_sharding is not None:
@@ -401,32 +393,44 @@ def train_ijepa(cfg):
                 Path(prof_cfg.log_dir).mkdir(parents=True, exist_ok=True)
                 jax.profiler.start_trace(prof_cfg.log_dir)
 
-            # Generate masks
-            mask_time = time.time()
-            key, mask_key, step_key = jax.random.split(key, 3)
+            # Generate masks and keys
+            key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             mask_ctx, mask_pred = generate_masks(
                 mask_key, masker, mask_cfg.n_pred_masks, data_cfg.batch_size
             )
-            mask_time = time.time() - mask_time
+
+            # Pre-split keys for vmap (one per batch element)
+            ema_keys = jax.random.split(ema_key, data_cfg.batch_size)
+            grad_keys = jax.random.split(step_key, data_cfg.batch_size)
 
             x = batch["image"]
             if cfg.bfloat16:
                 x = x.astype(jnp.bfloat16)
+
+            # Shard data AND keys identically across devices
             if data_sharding is not None:
                 x = jax.device_put(x, data_sharding)
                 mask_ctx = jax.device_put(mask_ctx, data_sharding)
                 mask_pred = jax.device_put(mask_pred, data_sharding)
+                ema_keys = jax.device_put(ema_keys, data_sharding)
+                grad_keys = jax.device_put(grad_keys, data_sharding)
+
+            # Target representations (EMA encoder, no grad)
+            z_ema = compute_target_reps(ema_encoder, x, ema_keys)
+            if normalize_tgt:
+                z_ema = normalize_targets(z_ema)
 
             # Debug info on first step
             if step == start_epoch * steps_per_epoch:
                 model_dtype = jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype
                 print(f"model dtype: {model_dtype}")
                 print(f"x: {x.shape}, dtype: {x.dtype}")
+                print(f"z_ema: {z_ema.shape}, dtype: {z_ema.dtype}")
 
-            # Train step (includes target rep computation)
+            # Train step
             step_time = time.time()
             model, opt_state, loss = step_model(
-                model, ema_encoder, opt_state, x, mask_ctx, mask_pred, step_key
+                model, opt_state, x, z_ema, mask_ctx, mask_pred, grad_keys
             )
             # EMA with linear schedule
             ema_decay = ema_start + (ema_end - ema_start) * (step / total_steps)
