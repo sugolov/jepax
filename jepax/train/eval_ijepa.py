@@ -95,9 +95,9 @@ def _eval_simple(train_feats, train_labels, val_feats, val_labels):
     probs = clf.predict_proba(val_feats)
     preds = probs.argmax(axis=-1)
 
-    top1 = float((preds == val_labels).mean())
+    top1 = float((preds == val_labels).mean()) * 100
     top5_idx = np.argsort(probs, axis=-1)[:, -5:]
-    top5 = float(np.any(top5_idx == val_labels[:, None], axis=-1).mean())
+    top5 = float(np.any(top5_idx == val_labels[:, None], axis=-1).mean()) * 100
 
     return top1, top5
 
@@ -225,9 +225,9 @@ def _train_probe_paper(
     else:
         logits = jax.vmap(probe)(val_feats_jnp)
 
-    top1 = float((logits.argmax(-1) == val_labels).mean())
+    top1 = float((logits.argmax(-1) == val_labels).mean()) * 100
     top5_idx = jnp.argsort(logits, axis=-1)[:, -5:]
-    top5 = float(jnp.any(top5_idx == val_labels[:, None], axis=-1).mean())
+    top5 = float(jnp.any(top5_idx == val_labels[:, None], axis=-1).mean()) * 100
 
     return top1, top5
 
@@ -296,6 +296,6 @@ def evaluate_linear_probe(
         )
 
     if verbose:
-        print(f"  top1={top1*100:.2f}%, top5={top5*100:.2f}%")
+        print(f"  top1={top1:.2f}%, top5={top5:.2f}%")
 
     return {"top1": top1, "top5": top5}

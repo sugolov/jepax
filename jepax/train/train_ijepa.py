@@ -164,10 +164,8 @@ def update_ema(ema_encoder, encoder, decay: float):
 
 
 @eqx.filter_jit
-def compute_target_reps(ema_encoder, x_b, key):
+def compute_target_reps(ema_encoder, x_b, keys):
     """Compute target representations using EMA encoder (no masking)."""
-    keys = jax.random.split(key, x_b.shape[0])
-    # EMA encoder processes all patches (mask=None)
     z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, mask=None, train=False)[0])(keys, x_b)
     return z_ema
 
@@ -437,7 +435,10 @@ def train_ijepa(cfg):
 
             # Target representations
             target_time = time.time()
-            z_ema = compute_target_reps(ema_encoder, x, ema_key)
+            ema_keys = jax.random.split(ema_key, data_cfg.batch_size)
+            if data_sharding is not None:
+                ema_keys = jax.device_put(ema_keys, data_sharding)
+            z_ema = compute_target_reps(ema_encoder, x, ema_keys)
             if getattr(train_cfg, "normalize_targets", False):
                 z_ema = normalize_targets(z_ema)
             target_time = time.time() - target_time
@@ -526,15 +527,15 @@ def train_ijepa(cfg):
             top1 = eval_result["top1"]
             top5 = eval_result["top5"]
             print(
-                f"Epoch {epoch + 1}: top1 {top1 * 100:.2f}%, "
-                f"top5 {top5 * 100:.2f}% ({probe_time:.1f}s)"
+                f"Epoch {epoch + 1}: top1 {top1:.2f}%, "
+                f"top5 {top5:.2f}% ({probe_time:.1f}s)"
             )
             if log_cfg.use_wandb:
                 import wandb
                 wandb.log(
                     {
-                        "probe/top1": top1 * 100,
-                        "probe/top5": top5 * 100,
+                        "probe/top1": top1,
+                        "probe/top5": top5,
                         "probe/time_s": probe_time,
                     },
                     step=step,
