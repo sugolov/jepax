@@ -587,10 +587,8 @@ def train_ijepa(cfg):
                 import wandb
                 wandb.log(
                     {
-                        "probe/top1": top1 * 100,
-                        "probe/top5": top5 * 100,
                         "probe/time_s": probe_time,
-                        **{f"probe/{k}": v for k, v in log_result.items()},
+                        **{f"probe/{k}": v * 100 for k, v in log_result.items()},
                     },
                     step=step,
                 )

@@ -176,14 +176,16 @@ class IJEPAEncoder(eqx.Module):
         """Get full positional embeddings [N_patches, D]."""
         return self.pe._get_pe_from_grid(self.pe.grid)
 
-    def __call__(self, key, x, indices=None, train=True):
+    def __call__(self, key, x, indices=None, train=True, get_intermediates=False):
         """
         Args:
             x: image [C, H, W]
             indices: patch indices to keep [N_keep], or None for all patches
+            get_intermediates: if True, return (out, intermediates) for concat probing
 
         Returns:
             out: encoder output [N_keep, D] or [N_patches, D]
+            intermediates: list of layer outputs (if get_intermediates=True)
         """
         x = self.embed(x)  # [N_patches, D]
         pos_emb = self.get_pos_embed()  # [N_patches, D]
@@ -195,8 +197,7 @@ class IJEPAEncoder(eqx.Module):
 
         x = x + pos_emb
 
-        out = self.transformer(x, key=key, train=train, use_pe=False)
-        return out
+        return self.transformer(x, key=key, train=train, use_pe=False, get_intermediates=get_intermediates)
 
 
 class IJEPAPredictor(eqx.Module):

@@ -20,32 +20,34 @@ class LinearProbe(eqx.Module):
 
 @eqx.filter_jit
 def get_representations(encoder, images, key, *, n_concat=1):
-    """Get mean-pooled representations for a batch of images."""
+    """Get mean-pooled representations for a batch of images.
+
+    Uses IJEPAEncoder interface: encoder(key, x, indices=None, train=False) -> out
+    """
     keys = jax.random.split(key, images.shape[0])
 
-    def encode_single(k, img):
-        # Encoder returns (out, indices, n_keep) when mask=None
-        out, _, _ = encoder(k, img, mask=None, train=False)
-        z = out.mean(axis=0)
+    def encode_last(k, img):
+        # IJEPAEncoder returns [N_patches, D] when indices=None
+        out = encoder(k, img, indices=None, train=False)
+        z = out.mean(axis=0)  # Mean pool over patches -> [D]
         return z, z
 
-    def encode_multiple(k, img):
-        # Encoder returns (out, intermediates, indices, n_keep) with get_intermediates=True
-        out, intermediates, _, _ = encoder(k, img, mask=None, train=False, get_intermediates=True)
-        z = out.mean(axis=0)
-        inter = jnp.stack(intermediates[-n_concat:])  # (n_last, T, D)
-        inter = inter.mean(axis=1)  # (n_last, D)
-        inter = inter.flatten()  # (n_last * D,)
-        return z, inter
+    def encode_concat(k, img):
+        # Get intermediates for concat probing
+        out, intermediates = encoder(k, img, indices=None, train=False, get_intermediates=True)
+        z_last = out.mean(axis=0)  # [D]
+        # Concat last n_concat layers, mean-pooled
+        inter = jnp.stack(intermediates[-n_concat:])  # [n_concat, T, D]
+        inter = inter.mean(axis=1)  # [n_concat, D]
+        z_concat = inter.flatten()  # [n_concat * D]
+        return z_last, z_concat
 
-    assert n_concat > 0, "last layer probing idx must be >= 0"
-    encode = encode_single if n_concat == 1 else encode_multiple
-
+    encode = encode_last if n_concat == 1 else encode_concat
     return jax.vmap(encode)(keys, images)
 
 
 def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
-    """Extract both last-layer and concat features in single pass."""
+    """Extract last-layer and concat features."""
     last_list, concat_list, labels_list = [], [], []
     n_seen = 0
 
@@ -54,9 +56,7 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
         batch_labels = batch["label"]
 
         key, subkey = jax.random.split(key)
-        last_reps, concat_reps = get_representations(
-            encoder, batch_imgs, subkey, n_concat=n_concat
-        )
+        last_reps, concat_reps = get_representations(encoder, batch_imgs, subkey, n_concat=n_concat)
 
         last_list.append(np.array(last_reps))
         concat_list.append(np.array(concat_reps))
@@ -162,7 +162,7 @@ def evaluate_linear_probe(
     max_val_samples=None,
     verbose=True,
 ):
-    """Train linear probes and evaluate. Returns dict with last/concat/best results."""
+    """Train linear probes on last-layer and concat features."""
     key, k1, k2, k3, k4 = jax.random.split(key, 5)
 
     if verbose:
@@ -178,11 +178,10 @@ def evaluate_linear_probe(
     )
 
     if verbose:
-        print(
-            f"Probe: train {train_last.shape} / {train_concat.shape}, "
-            f"val {val_last.shape} / {val_concat.shape}"
-        )
+        print(f"Probe: train last {train_last.shape}, concat {train_concat.shape}")
+        print(f"Probe: val last {val_last.shape}, concat {val_concat.shape}")
 
+    # Last-layer probe
     if verbose:
         print("Probe: training last-layer probe")
     top1_last, top5_last = train_and_eval_probe(
@@ -206,6 +205,7 @@ def evaluate_linear_probe(
         "best": (top1_last, top5_last),
     }
 
+    # Concat probe (if n_concat > 1)
     if n_concat > 1:
         if verbose:
             print(f"Probe: training concat-{n_concat} probe")
@@ -225,6 +225,7 @@ def evaluate_linear_probe(
             verbose=verbose,
         )
         result["concat"] = (top1_concat, top5_concat)
-        result["best"] = (max(top1_last, top1_concat), max(top5_last, top5_concat))
+        if top1_concat > top1_last:
+            result["best"] = (top1_concat, top5_concat)
 
     return result
