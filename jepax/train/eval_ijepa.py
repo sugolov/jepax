@@ -1,4 +1,11 @@
+"""Linear probe evaluation for I-JEPA.
+
+Two modes:
+- paper: LARS optimizer, optionally with BatchNorm, tests last-layer and concat-4
+- simple: sklearn LogisticRegression on last-layer only
+"""
 import gc
+import warnings
 
 import equinox as eqx
 import jax
@@ -6,6 +13,100 @@ import numpy as np
 import optax
 from jax import numpy as jnp
 from tqdm import tqdm
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+
+# -----------------------------------------------------------------------------
+# Feature extraction (shared)
+# -----------------------------------------------------------------------------
+
+
+@eqx.filter_jit
+def _get_reps_last(encoder, images, key):
+    """Get mean-pooled last-layer representations."""
+    keys = jax.random.split(key, images.shape[0])
+
+    def encode(k, img):
+        out, _, _ = encoder(k, img, mask=None, train=False)
+        return out.mean(axis=0)
+
+    return jax.vmap(encode)(keys, images)
+
+
+@eqx.filter_jit
+def _get_reps_concat(encoder, images, key, n_concat=4):
+    """Get concatenated avg-pooled representations from last n layers."""
+    keys = jax.random.split(key, images.shape[0])
+
+    def encode(k, img):
+        out, intermediates, _, _ = encoder(
+            k, img, mask=None, train=False, get_intermediates=True
+        )
+        last = out.mean(axis=0)
+        inter = jnp.stack(intermediates[-n_concat:])  # (n_concat, T, D)
+        inter = inter.mean(axis=1).flatten()  # (n_concat * D,)
+        return last, inter
+
+    return jax.vmap(encode)(keys, images)
+
+
+def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
+    """Extract features from encoder."""
+    last_list, concat_list, labels_list = [], [], []
+    n_seen = 0
+
+    for batch in loader:
+        batch_imgs = batch["image"]
+        batch_labels = batch["label"]
+        key, subkey = jax.random.split(key)
+
+        if n_concat > 1:
+            last, concat = _get_reps_concat(encoder, batch_imgs, subkey, n_concat)
+            concat_list.append(np.array(concat))
+        else:
+            last = _get_reps_last(encoder, batch_imgs, subkey)
+
+        last_list.append(np.array(last))
+        labels_list.append(np.array(batch_labels))
+
+        n_seen += len(batch_imgs)
+        if max_samples and n_seen >= max_samples:
+            break
+
+    last = np.concatenate(last_list)[:max_samples]
+    labels = np.concatenate(labels_list)[:max_samples]
+    concat = np.concatenate(concat_list)[:max_samples] if concat_list else None
+
+    gc.collect()
+    return last, concat, labels
+
+
+# -----------------------------------------------------------------------------
+# Simple mode: sklearn LogisticRegression
+# -----------------------------------------------------------------------------
+
+
+def _eval_simple(train_feats, train_labels, val_feats, val_labels):
+    """Simple sklearn logistic regression probe."""
+    from sklearn.linear_model import LogisticRegression
+
+    clf = LogisticRegression(max_iter=100, n_jobs=-1, verbose=0)
+    clf.fit(train_feats, train_labels)
+
+    probs = clf.predict_proba(val_feats)
+    preds = probs.argmax(axis=-1)
+
+    top1 = float((preds == val_labels).mean())
+    top5_idx = np.argsort(probs, axis=-1)[:, -5:]
+    top5 = float(np.any(top5_idx == val_labels[:, None], axis=-1).mean())
+
+    return top1, top5
+
+
+# -----------------------------------------------------------------------------
+# Paper mode: LARS/Adam + optional BatchNorm
+# -----------------------------------------------------------------------------
 
 
 class LinearProbe(eqx.Module):
@@ -18,81 +119,23 @@ class LinearProbe(eqx.Module):
         return self.linear(x)
 
 
-@eqx.filter_jit
-def get_representations(encoder, images, key, *, n_concat=1):
-    """Get mean-pooled representations for a batch of images."""
-    keys = jax.random.split(key, images.shape[0])
+class BNLinearProbe(eqx.Module):
+    bn: eqx.nn.BatchNorm
+    linear: eqx.nn.Linear
 
-    def encode_single(k, img):
-        # Encoder returns (out, indices, n_keep) when mask=None
-        out, _, _ = encoder(k, img, mask=None, train=False)
-        z = out.mean(axis=0)
-        return z, z
+    def __init__(self, in_dim: int, out_dim: int, *, key):
+        self.bn = eqx.nn.BatchNorm(in_dim, axis_name="batch")
+        self.linear = eqx.nn.Linear(in_dim, out_dim, key=key)
 
-    def encode_multiple(k, img):
-        # Encoder returns (out, intermediates, indices, n_keep) with get_intermediates=True
-        out, intermediates, _, _ = encoder(k, img, mask=None, train=False, get_intermediates=True)
-        z = out.mean(axis=0)
-        inter = jnp.stack(intermediates[-n_concat:])  # (n_last, T, D)
-        inter = inter.mean(axis=1)  # (n_last, D)
-        inter = inter.flatten()  # (n_last * D,)
-        return z, inter
-
-    assert n_concat > 0, "last layer probing idx must be >= 0"
-    encode = encode_single if n_concat == 1 else encode_multiple
-
-    return jax.vmap(encode)(keys, images)
+    def __call__(self, x, state):
+        x, state = self.bn(x, state)
+        return self.linear(x), state
 
 
-def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
-    """Extract both last-layer and concat features in single pass."""
-    last_list, concat_list, labels_list = [], [], []
-    n_seen = 0
-
-    for batch in loader:
-        batch_imgs = batch["image"]
-        batch_labels = batch["label"]
-
-        key, subkey = jax.random.split(key)
-        last_reps, concat_reps = get_representations(
-            encoder, batch_imgs, subkey, n_concat=n_concat
-        )
-
-        last_list.append(np.array(last_reps))
-        concat_list.append(np.array(concat_reps))
-        labels_list.append(np.array(batch_labels))
-
-        n_seen += len(batch_imgs)
-        if max_samples and n_seen >= max_samples:
-            break
-
-    last = np.concatenate(last_list)[:max_samples]
-    concat = np.concatenate(concat_list)[:max_samples]
-    labels = np.concatenate(labels_list)[:max_samples]
-
-    gc.collect()
-
-    return last, concat, labels
-
-
-@eqx.filter_jit
-def linear_probe_step(probe, optimizer, opt_state, reps, labels):
-    def loss_fn(probe):
-        logits = jax.vmap(probe)(reps)
-        return optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
-
-    loss, grads = eqx.filter_value_and_grad(loss_fn)(probe)
-    updates, opt_state = optimizer.update(
-        grads, opt_state, eqx.filter(probe, eqx.is_array)
-    )
-    probe = eqx.apply_updates(probe, updates)
-    return probe, opt_state, loss
-
-
-def train_and_eval_probe(
-    train_reps,
+def _train_probe_paper(
+    train_feats,
     train_labels,
-    val_reps,
+    val_feats,
     val_labels,
     input_dim,
     num_classes,
@@ -100,49 +143,89 @@ def train_and_eval_probe(
     n_epochs,
     lr,
     batch_size,
-    optim="adam",
-    weight_decay=5e-4,
-    verbose=False,
+    optim="lars",
+    weight_decay=0.0,
+    use_bn=False,
 ):
-    """Train a single linear probe and return (top1, top5)."""
-    probe = LinearProbe(input_dim, num_classes, key=key)
+    """Train probe with LARS/Adam optimizer (paper style)."""
+    key, init_key = jax.random.split(key)
 
-    if optim.lower() in ["adam", "adamw"]:
-        optimizer = optax.adamw(lr, weight_decay=weight_decay)
-    elif optim.lower() == "lars":
+    if use_bn:
+        probe, state = eqx.nn.make_with_state(BNLinearProbe)(
+            input_dim, num_classes, key=init_key
+        )
+    else:
+        probe = LinearProbe(input_dim, num_classes, key=init_key)
+        state = None
+
+    if optim.lower() == "lars":
         optimizer = optax.lars(lr, weight_decay=weight_decay)
+    elif optim.lower() in ["adam", "adamw"]:
+        optimizer = optax.adamw(lr, weight_decay=weight_decay)
     else:
         optimizer = optax.sgd(lr)
 
     opt_state = optimizer.init(eqx.filter(probe, eqx.is_array))
 
-    n_train = len(train_reps)
-    epoch_iter = (
-        tqdm(range(n_epochs), desc="    Probe", leave=False)
-        if verbose
-        else range(n_epochs)
-    )
+    @eqx.filter_jit
+    def step_bn(probe, state, opt_state, feats, labels):
+        def loss_fn(probe, state):
+            logits, state = jax.vmap(
+                probe, axis_name="batch", in_axes=(0, None), out_axes=(0, None)
+            )(feats, state)
+            loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
+            return loss, state
 
-    for _ in epoch_iter:
+        (loss, state), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(probe, state)
+        updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(probe, eqx.is_array))
+        probe = eqx.apply_updates(probe, updates)
+        return probe, state, opt_state, loss
+
+    @eqx.filter_jit
+    def step_linear(probe, opt_state, feats, labels):
+        def loss_fn(probe):
+            logits = jax.vmap(probe)(feats)
+            return optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
+
+        loss, grads = eqx.filter_value_and_grad(loss_fn)(probe)
+        updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(probe, eqx.is_array))
+        probe = eqx.apply_updates(probe, updates)
+        return probe, opt_state, loss
+
+    n_train = len(train_feats)
+    for _ in range(n_epochs):
         perm = np.random.permutation(n_train)
         for i in range(0, n_train, batch_size):
             idx = perm[i : i + batch_size]
-            probe, opt_state, _ = linear_probe_step(
-                probe,
-                optimizer,
-                opt_state,
-                jnp.array(train_reps[idx]),
-                jnp.array(train_labels[idx]),
-            )
+            if len(idx) < 2:
+                continue  # BatchNorm needs at least 2 samples
+            feats_batch = jnp.array(train_feats[idx])
+            labels_batch = jnp.array(train_labels[idx])
+            if use_bn:
+                probe, state, opt_state, _ = step_bn(probe, state, opt_state, feats_batch, labels_batch)
+            else:
+                probe, opt_state, _ = step_linear(probe, opt_state, feats_batch, labels_batch)
 
     # Evaluate
-    logits = jax.vmap(probe)(jnp.array(val_reps))
+    val_feats_jnp = jnp.array(val_feats)
+    if use_bn:
+        inference_probe = eqx.nn.inference_mode(probe)
+        logits, _ = jax.vmap(
+            inference_probe, in_axes=(0, None), out_axes=(0, None)
+        )(val_feats_jnp, state)
+    else:
+        logits = jax.vmap(probe)(val_feats_jnp)
 
     top1 = float((logits.argmax(-1) == val_labels).mean())
-    top5_preds = jnp.argsort(logits, axis=-1)[:, -5:]
-    top5 = float(jnp.any(top5_preds == val_labels[:, None], axis=-1).mean())
+    top5_idx = jnp.argsort(logits, axis=-1)[:, -5:]
+    top5 = float(jnp.any(top5_idx == val_labels[:, None], axis=-1).mean())
 
     return top1, top5
+
+
+# -----------------------------------------------------------------------------
+# Main evaluation function
+# -----------------------------------------------------------------------------
 
 
 def evaluate_linear_probe(
@@ -152,79 +235,80 @@ def evaluate_linear_probe(
     val_loader,
     num_classes,
     key,
+    mode="paper",
     n_concat=4,
     n_epochs=50,
-    lr=0.01,
-    batch_size=512,
-    optim="adam",
-    weight_decay=5e-4,
+    lr=0.1,
+    batch_size=16384,
+    optim="lars",
+    weight_decay=0.0,
     max_train_samples=None,
     max_val_samples=None,
     verbose=True,
+    **kwargs,
 ):
-    """Train linear probes and evaluate. Returns dict with last/concat/best results."""
-    key, k1, k2, k3, k4 = jax.random.split(key, 5)
+    """Evaluate linear probe.
+
+    Args:
+        mode: "paper" (LARS + BN option, test last & concat) or "simple" (sklearn)
+    """
+    key, k1, k2 = jax.random.split(key, 3)
 
     if verbose:
         print("Probe: extracting train features")
     train_last, train_concat, train_labels = extract_features(
-        encoder, train_loader, k1, max_train_samples, n_concat=n_concat
+        encoder, train_loader, k1, max_train_samples, n_concat if mode == "paper" else 1
     )
 
     if verbose:
         print("Probe: extracting val features")
     val_last, val_concat, val_labels = extract_features(
-        encoder, val_loader, k2, max_val_samples, n_concat=n_concat
+        encoder, val_loader, k2, max_val_samples, n_concat if mode == "paper" else 1
     )
 
     if verbose:
-        print(
-            f"Probe: train {train_last.shape} / {train_concat.shape}, "
-            f"val {val_last.shape} / {val_concat.shape}"
-        )
+        shapes = f"train {train_last.shape}, val {val_last.shape}"
+        if train_concat is not None:
+            shapes += f" (concat: {train_concat.shape})"
+        print(f"Probe: {shapes}")
 
-    if verbose:
-        print("Probe: training last-layer probe")
-    top1_last, top5_last = train_and_eval_probe(
-        train_last,
-        train_labels,
-        val_last,
-        val_labels,
-        embed_dim,
-        num_classes,
-        k3,
-        n_epochs,
-        lr,
-        batch_size,
-        optim=optim,
-        weight_decay=weight_decay,
-        verbose=verbose,
-    )
-
-    result = {
-        "last": (top1_last, top5_last),
-        "best": (top1_last, top5_last),
-    }
-
-    if n_concat > 1:
+    if mode == "simple":
         if verbose:
-            print(f"Probe: training concat-{n_concat} probe")
-        top1_concat, top5_concat = train_and_eval_probe(
-            train_concat,
-            train_labels,
-            val_concat,
-            val_labels,
-            embed_dim * n_concat,
-            num_classes,
-            k4,
-            n_epochs,
-            lr,
-            batch_size,
-            optim=optim,
-            weight_decay=weight_decay,
-            verbose=verbose,
-        )
-        result["concat"] = (top1_concat, top5_concat)
-        result["best"] = (max(top1_last, top1_concat), max(top5_last, top5_concat))
+            print("Probe: sklearn logistic regression")
+        top1, top5 = _eval_simple(train_last, train_labels, val_last, val_labels)
+        return {"top1": top1, "top5": top5}
 
-    return result
+    # Paper mode: test multiple configurations, report best
+    results = {}
+    best_top1, best_top5 = 0.0, 0.0
+
+    configs = [
+        ("last", train_last, val_last, embed_dim, False),
+        ("last_bn", train_last, val_last, embed_dim, True),
+    ]
+    if train_concat is not None:
+        configs.extend([
+            ("concat", train_concat, val_concat, embed_dim * n_concat, False),
+            ("concat_bn", train_concat, val_concat, embed_dim * n_concat, True),
+        ])
+
+    for name, tr_f, val_f, dim, use_bn in configs:
+        if verbose:
+            print(f"Probe: training {name}")
+        key, subkey = jax.random.split(key)
+        t1, t5 = _train_probe_paper(
+            tr_f, train_labels, val_f, val_labels,
+            dim, num_classes, subkey,
+            n_epochs, lr, batch_size, optim, weight_decay, use_bn,
+        )
+        results[f"{name}_top1"] = t1
+        results[f"{name}_top5"] = t5
+        best_top1 = max(best_top1, t1)
+        best_top5 = max(best_top5, t5)
+        if verbose:
+            print(f"  {name}: top1={t1*100:.2f}%, top5={t5*100:.2f}%")
+
+    # Best across all configs (for printing/summary)
+    results["top1"] = best_top1
+    results["top5"] = best_top5
+    return results

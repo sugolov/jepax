@@ -137,6 +137,7 @@ def eval_probe(
         train_loader=train_loader,
         val_loader=val_loader,
         num_classes=num_classes,
+        mode=getattr(cfg_eval, "mode", "paper"),
         batch_size=cfg_eval.batch_size,
         optim=cfg_eval.optim,
         key=key,
@@ -148,11 +149,8 @@ def eval_probe(
         weight_decay=cfg_eval.wd,
     )
 
-    log_result = {}
-    for k, (top1, top5) in eval_result.items():
-        log_result[f"{k}_top1"] = top1
-        log_result[f"{k}_top5"] = top5
-
+    # Build log dict - exclude top1/top5 summary (already have individual results)
+    log_result = {k: v for k, v in eval_result.items() if k not in ("top1", "top5")}
     return eval_result, log_result
 
 
@@ -527,7 +525,8 @@ def train_ijepa(cfg):
                 cfg_eval=eval_cfg,
             )
             probe_time = time.time() - probe_time
-            top1, top5 = eval_result["best"]
+            top1 = eval_result["top1"]
+            top5 = eval_result["top5"]
             print(
                 f"Epoch {epoch + 1}: top1 {top1 * 100:.2f}%, "
                 f"top5 {top5 * 100:.2f}% ({probe_time:.1f}s)"
@@ -536,10 +535,8 @@ def train_ijepa(cfg):
                 import wandb
                 wandb.log(
                     {
-                        "probe/top1": top1 * 100,
-                        "probe/top5": top5 * 100,
                         "probe/time_s": probe_time,
-                        **{f"probe/{k}": v for k, v in log_result.items()},
+                        **{f"probe/{k}": v * 100 for k, v in log_result.items()},
                     },
                     step=step,
                 )

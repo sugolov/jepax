@@ -2,7 +2,7 @@
 
 exp_name: jepa_imagenet
 save_dir: ./checkpoints
-save_interval: 100
+save_interval: 50
 shard: true
 bfloat16: false
 
@@ -41,15 +41,16 @@ mask:
   ctx_aspect: 1.0
 
 eval:
+  mode: paper  # paper (LARS + BN option) or simple (sklearn logreg)
   interval: 30
   epochs: 50
-  batch_size: 4096
-  train_samples: 50000
-  val_samples: 50000
+  batch_size: 16384
+  train_samples: null  # null = use all (~1.2M for ImageNet)
+  val_samples: null    # null = use all (~50K for ImageNet)
   n_concat: 4
-  optim: adam
-  lr: 1.0e-2
-  wd: 5.0e-4
+  optim: lars
+  lr: 0.1
+  wd: 0.0
 
 logging:
   use_wandb: true
