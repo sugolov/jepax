@@ -116,12 +116,11 @@ class RandomHorizontalFlip(grain.MapTransform):
 
 
 class ToNumpyFloat32(grain.MapTransform):
-    """PIL -> numpy float32 CHW in [0, 1]"""
+    """PIL -> numpy float32 HWC in [0, 1]"""
 
     def map(self, x):
         img = np.array(x["image"], dtype=np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))  # HWC -> CHW
-        x["image"] = img
+        x["image"] = img  # Keep HWC format (works better with JAX sharding)
         return x
 
 

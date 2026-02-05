@@ -1,3 +1,4 @@
+import einops
 import equinox as eqx
 import jax
 from jax import numpy as jnp
@@ -60,16 +61,15 @@ class PatchEmbedding(eqx.Module):
         )
 
     def __call__(
-        self, x: Float[Array, "C H W"]
+        self, x: Float[Array, "H W C"]
     ) -> Float[Array, "N D"]:
-        # Native JAX patchify (avoids einops sharding issues)
-        c, h, w = x.shape
-        ps = self.patch_size
-        n_h, n_w = h // ps, w // ps
-        # [C, H, W] -> [C, n_h, ps, n_w, ps] -> [n_h, n_w, C, ps, ps] -> [N, C*ps*ps]
-        x = x.reshape(c, n_h, ps, n_w, ps)
-        x = jnp.transpose(x, (1, 3, 0, 2, 4))
-        x = x.reshape(n_h * n_w, c * ps * ps)
+        # HWC format patchify (works with JAX sharding)
+        x = einops.rearrange(
+            x,
+            "(h ph) (w pw) c -> (h w) (c ph pw)",
+            ph=self.patch_size,
+            pw=self.patch_size,
+        )
         x = jax.vmap(self.linear)(x)
         return x
 
@@ -112,7 +112,7 @@ class ViTclassifier(eqx.Module):
 
     def __call__(
         self,
-        x: Float[Array, "C H W"],
+        x: Float[Array, "H W C"],
         key: Key[Array, ""],
         train: bool = True,
     ) -> Float[Array, " K"]:

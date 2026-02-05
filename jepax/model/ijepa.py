@@ -179,7 +179,7 @@ class IJEPAEncoder(eqx.Module):
     def __call__(self, key, x, indices=None, train=True, get_intermediates=False):
         """
         Args:
-            x: image [C, H, W]
+            x: image [H, W, C]
             indices: patch indices to keep [N_keep], or None for all patches
             get_intermediates: if True, return (out, intermediates) for concat probing
 
@@ -312,7 +312,7 @@ class IJEPA(eqx.Module):
     def __call__(self, key, x: Array, ctx_indices: Array, tgt_indices: Array, train=True):
         """
         Args:
-            x: image [C, H, W]
+            x: image [H, W, C]
             ctx_indices: context patch indices [N_ctx]
             tgt_indices: target patch indices [N_tgt]
 
