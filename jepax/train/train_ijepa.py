@@ -478,19 +478,20 @@ def train_ijepa(cfg):
             if cfg.bfloat16:
                 x = x.astype(jnp.bfloat16)
 
+            target_time = time.time()
+            z_ema = compute_target_reps(ema_encoder, x, ema_key)
+
             # Split step keys for batch (before sharding)
             batch_size = x.shape[0]
             step_keys = jax.random.split(step_key, batch_size)
 
+            # Now shard for the training step
             if data_sharding is not None:
                 x = jax.device_put(x, data_sharding)
+                z_ema = jax.device_put(z_ema, data_sharding)
                 ctx_indices = jax.device_put(ctx_indices, data_sharding)
                 tgt_indices = jax.device_put(tgt_indices, data_sharding)
                 step_keys = jax.device_put(step_keys, data_sharding)
-
-            # Target representations (EMA encoder on full images)
-            target_time = time.time()
-            z_ema = compute_target_reps(ema_encoder, x, ema_key)
             target_time = time.time() - target_time
 
             # Debug info on first step
