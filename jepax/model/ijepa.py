@@ -152,6 +152,7 @@ class IJEPAEncoder(eqx.Module):
     embed: PatchEmbedding
     transformer: Transformer
     pe: PositionalEncoding2D
+    norm: eqx.nn.LayerNorm
     dim: int = eqx.field(static=True)
     seq_len: int = eqx.field(static=True)
 
@@ -184,6 +185,7 @@ class IJEPAEncoder(eqx.Module):
             causal=False,
         )
         self.pe = PositionalEncoding2D(dim=dim, seq_len=seq_len, grid_size=grid_size)
+        self.norm = eqx.nn.LayerNorm(dim)
         self.dim = dim
         self.seq_len = seq_len
 
@@ -234,7 +236,10 @@ class IJEPAEncoder(eqx.Module):
 
         if get_intermediates:
             out, intermediates = out
+            out = jax.vmap(self.norm)(out)
             return out, intermediates, indices, n_keep
+
+        out = jax.vmap(self.norm)(out)
         return out, indices, n_keep
 
 
