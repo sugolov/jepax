@@ -169,9 +169,10 @@ def update_ema(ema_encoder, encoder, decay: float):
 
 
 @eqx.filter_jit
-def compute_target_reps(ema_encoder, x_b, keys):
+def compute_target_reps(ema_encoder, x_b, key):
     """Compute target representations using EMA encoder (all patches)."""
-    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, indices=None, train=False))(keys, x_b)
+    # Single key is fine since train=False means no dropout
+    z_ema = jax.vmap(lambda x: ema_encoder(key, x, indices=None, train=False))(x_b)
     return z_ema
 
 
@@ -477,21 +478,19 @@ def train_ijepa(cfg):
             if cfg.bfloat16:
                 x = x.astype(jnp.bfloat16)
 
-            # Split keys for batch (before sharding)
+            # Split step keys for batch (before sharding)
             batch_size = x.shape[0]
-            ema_keys = jax.random.split(ema_key, batch_size)
             step_keys = jax.random.split(step_key, batch_size)
 
             if data_sharding is not None:
                 x = jax.device_put(x, data_sharding)
                 ctx_indices = jax.device_put(ctx_indices, data_sharding)
                 tgt_indices = jax.device_put(tgt_indices, data_sharding)
-                ema_keys = jax.device_put(ema_keys, data_sharding)
                 step_keys = jax.device_put(step_keys, data_sharding)
 
             # Target representations (EMA encoder on full images)
             target_time = time.time()
-            z_ema = compute_target_reps(ema_encoder, x, ema_keys)
+            z_ema = compute_target_reps(ema_encoder, x, ema_key)
             target_time = time.time() - target_time
 
             # Debug info on first step
