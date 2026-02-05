@@ -207,18 +207,19 @@ def compute_target_reps(ema_encoder, x_b, key):
 
 
 @eqx.filter_value_and_grad
-def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pad, key):
+def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pred_masks, key):
 
     keys = jax.random.split(key, x_b.shape[0])
 
     # forward
     _, z_pred, mask_target = jax.vmap(
-        lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=num_pad, train=True)
+        lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=64, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
-    # compute loss at mask_target
-    mse = jnp.sum((z_ema - z_pred) ** 2, axis=-1)  # (B, num_pad)
-    loss = jnp.sum(mse * mask_target) / jnp.sum(mask_target)  # only count valid positions
+    # compute l2 dist with ema targets
+    l2_dist = jnp.sum((z_ema - z_pred) ** 2, axis=-1)
+    loss_per_sample = jnp.sum(l2_dist * mask_target, axis=-1) / num_pred_masks  # (B,)
+    loss = jnp.mean(loss_per_sample)  # average over batch
     
     return loss
 
@@ -436,9 +437,9 @@ def train_ijepa(
     
     # step model prep
     @eqx.filter_jit
-    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pad, key):
+    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, num_pred_masks, key):
 
-        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, num_pad, key)
+        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, num_pred_masks, key)
 
         # track gradient statistics
         grad_stats = {}
@@ -499,6 +500,9 @@ def train_ijepa(
             key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             mask_ctx, mask_pred = generate_masks(mask_key, masker, num_pred_masks, batch_size)
             mask_time = time.time() - mask_time
+
+            avg_mask_pred_ratio = jnp.mean(mask_pred)
+            avg_mask_ctx_ratio = 1 - jnp.mean(mask_ctx)
             
             x = batch["image"]
             x = x.astype(jnp.bfloat16) if bfloat16 else x
@@ -526,7 +530,7 @@ def train_ijepa(
             model, opt_state, loss, grad_stats, = step_model(
                 model, opt_state,
                 x, z_ema, mask_ctx, mask_pred,
-                num_pad, step_key
+                num_pred_masks, step_key
             )
             ema_encoder = update_ema(
                 ema_encoder, 
@@ -551,6 +555,8 @@ def train_ijepa(
                         "schedule/lr": float(lr_schedule(step)),
                         "schedule/wd": float(wd_schedule(step)),
                         "schedule/ema": float(ema_scheduler(step)),
+                        "schedule/ratio_mask_pred": float(avg_mask_pred_ratio),
+                        "schedule/ratio_mask_ctx": float(avg_mask_ctx_ratio),
                         **{f"grad/{k}": float(v) for k, v in grad_stats.items()},
                     }, 
                         step=step
@@ -570,7 +576,7 @@ def train_ijepa(
         # end of epoch
         # linear probe eval
 
-        if eval_interval > 0 and (epoch + 1) % eval_interval == 0:
+        if eval_interval > 0 and ((epoch + 1) % eval_interval == 0 or epoch + 1 == 1):
             probe_time = time.time()
             key, eval_key = jax.random.split(key)
             print(f"Epoch {epoch+1}/{epochs}: linear probe eval, " \

@@ -30,8 +30,8 @@ ijepa_predictor_configs = {
     "pred-ti": {"latent_dim": 96, "num_layers": 6, "num_head": 3, "mlp_ratio": 4.0},
     "pred-s": {"latent_dim": 192, "num_layers": 6, "num_head": 6, "mlp_ratio": 4.0},
     "pred-b": {"latent_dim": 384, "num_layers": 6, "num_head": 12, "mlp_ratio": 4.0},
-    "pred-l": {"latent_dim": 512, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
-    "pred-h": {"latent_dim": 640, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
+    "pred-l": {"latent_dim": 384, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
+    "pred-h": {"latent_dim": 384, "num_layers": 12, "num_head": 16, "mlp_ratio": 4.0},
     "test": {"latent_dim": 32, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
 }
 

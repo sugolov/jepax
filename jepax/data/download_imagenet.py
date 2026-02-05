@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from tqdm import tqdm
 
+from concurrent.futures import ThreadPoolExecutor
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Download ImageNet from HuggingFace")
@@ -23,7 +25,6 @@ def parse_args():
 
 
 def download_with_retry(split, max_retries=5):
-    """Download a split with retry logic."""
     from datasets import load_dataset
     
     for attempt in range(max_retries):
@@ -33,7 +34,7 @@ def download_with_retry(split, max_retries=5):
                 "ILSVRC/imagenet-1k",
                 split=split,
                 trust_remote_code=True,
-                num_proc=1,  # avoid multiprocessing issues on unstable networks
+                num_proc=8,  # avoid multiprocessing issues on unstable networks
             )
             return dataset
         except Exception as e:
@@ -46,29 +47,29 @@ def download_with_retry(split, max_retries=5):
                 raise
 
 
-def save_split(dataset, split_dir, split_name):
+def save_split(dataset, split_dir, split_name, num_workers=16):
     """Save dataset to ImageFolder structure."""
     split_dir = Path(split_dir)
     split_dir.mkdir(parents=True, exist_ok=True)
+    int2str = dataset.features["label"].int2str
     
-    print(f"Saving {split_name} to {split_dir}...")
+    print(f"Saving {split_name} to {split_dir}...", flush=True)
     
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Saving {split_name}")):
-        img = sample["image"]
-        label = sample["label"]
-        
-        synset = dataset.features["label"].int2str(label)
-        class_dir = split_dir / synset
+    def save_one(idx_sample):
+        idx, sample = idx_sample
+        img, label = sample["image"], sample["label"]
+        class_dir = split_dir / int2str(label)
         class_dir.mkdir(exist_ok=True)
-        
         img_path = class_dir / f"{idx:08d}.JPEG"
         if not img_path.exists():
             if img.mode != "RGB":
                 img = img.convert("RGB")
             img.save(img_path, "JPEG")
     
-    print(f"Done: {split_dir}")
-
+    with ThreadPoolExecutor(max_workers=num_workers) as ex:
+        list(tqdm(ex.map(save_one, enumerate(dataset)), total=len(dataset), desc=f"Saving {split_name}"))
+    
+    print(f"Done: {split_dir}", flush=True)
 
 def main():
     args = parse_args()
