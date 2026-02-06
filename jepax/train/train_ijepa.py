@@ -188,6 +188,12 @@ def get_num_pad(mask_pred, buckets=None):
     return buckets[-1]
 
 @eqx.filter_jit
+def normalize_targets(z_ema):
+    mean = jnp.mean(z_ema, axis=-1, keepdims=True)
+    var = jnp.var(z_ema, axis=-1, keepdims=True)
+    return (z_ema - mean) / jnp.sqrt(var + 1e-6)
+
+@eqx.filter_jit
 def update_ema(ema_encoder, encoder, decay: float):
     ema_params, ema_static = eqx.partition(ema_encoder, eqx.is_array)
     enc_params, _ = eqx.partition(encoder, eqx.is_array)
@@ -202,25 +208,43 @@ def update_ema(ema_encoder, encoder, decay: float):
 @eqx.filter_jit
 def compute_target_reps(ema_encoder, x_b, key):
     keys = jax.random.split(key, x_b.shape[0])
-    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, train=False))(keys, x_b)
+    z_ema = jax.vmap(lambda k, x: ema_encoder(k, x, mask=None, train=False)[0])(keys, x_b)
     return z_ema
 
 
 @eqx.filter_value_and_grad
 def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, num_pred_masks, key):
-
     keys = jax.random.split(key, x_b.shape[0])
+    seq_len = z_ema.shape[1]
 
-    # forward
-    _, z_pred, mask_target = jax.vmap(
-        lambda k, x, mc, mp: model(k, x, mc, mp, num_pad=64, train=True)
+    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
+        lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
     )(keys, x_b, mask_ctx_b, mask_pred_b)
 
-    # compute l2 dist with ema targets
-    l2_dist = jnp.sum((z_ema - z_pred) ** 2, axis=-1)
-    loss_per_sample = jnp.sum(l2_dist * mask_target, axis=-1) / num_pred_masks  # (B,)
-    loss = jnp.mean(loss_per_sample)  # average over batch
-    
+    z_ema = z_ema.astype(jnp.float32)
+    z_pred = z_pred.astype(jnp.float32)
+
+    # Gather targets by index
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)
+
+    # Shift predictions to align with targets
+    z_pred_shifted = jax.vmap(lambda z_p, ps: jnp.roll(z_p, -ps, axis=0))(z_pred, pred_start)
+
+    # Valid mask based on n_tgt
+    pos_idx = jnp.arange(seq_len)[None, :]
+    valid_mask = pos_idx < n_tgt[:, None]
+
+    # Smooth L1 loss
+    diff = z_pred_shifted - z_tgt
+
+    loss_per_token = jnp.sum(diff**2, axis=-1) / num_pred_masks
+
+    #abs_diff = jnp.abs(diff)
+    #smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
+
+    #loss_per_token = jnp.mean(smooth_l1, axis=-1)
+    loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
+
     return loss
 
 def train_ijepa(
@@ -513,6 +537,7 @@ def train_ijepa(
 
             target_time = time.time()
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
+            z_ema = normalize_targets(z_ema)
             target_time = time.time() - target_time
 
             #z_ema = z_ema.astype(jnp.bfloat16) if bfloat16 else z_ema
