@@ -26,16 +26,16 @@ def get_representations(encoder, images, key, *, n_concat=1):
     keys = jax.random.split(key, images.shape[0])
 
     def encode_single(k, img):
-        out = encoder(k, img, mask=None, train=False)
+        out, indices, n_keep = encoder(k, img, mask=None, train=False)
         z = out.mean(axis=0)
         return z, z
 
     def encode_multiple(k, img):
-        z, out = encoder(k, img, mask=None, train=False, get_intermediates=True)
+        z, intermediates, indices, n_keep = encoder(k, img, mask=None, train=False, get_intermediates=True)
         z = z.mean(axis=0)
-        out = jnp.stack(out[-n_concat:]) # (n_last, T, D)
-        out = out.mean(axis=1) # (n_last, D)
-        out = out.flatten() # (n_last * D,)
+        out = jnp.stack(intermediates[-n_concat:])  # (n_last, T, D)
+        out = out.mean(axis=1)   # (n_last, D)
+        out = out.flatten()      # (n_last * D,)
         return z, out
     
     assert n_concat > 0, "last layer probing idx must be >= 0"
