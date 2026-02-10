@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import time
 from collections import OrderedDict
@@ -47,8 +48,6 @@ def parse_args():
 
 
 def save_checkpoint(model, ema_encoder, opt_state, epoch, hparams, path):
-    import json
-
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_ema_enc.eqx", ema_encoder)
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
@@ -114,14 +113,12 @@ def eval_probe(
     key,
     cfg_eval,
 ):
-    """Run linear probe evaluation."""
     eval_result = evaluate_linear_probe(
         encoder=encoder,
         embed_dim=embed_dim,
         train_loader=train_loader,
         val_loader=val_loader,
         num_classes=num_classes,
-        mode=getattr(cfg_eval, "mode", "paper"),
         batch_size=cfg_eval.batch_size,
         optim=cfg_eval.optim,
         key=key,
@@ -131,6 +128,7 @@ def eval_probe(
         max_train_samples=cfg_eval.train_samples,
         max_val_samples=cfg_eval.val_samples,
         weight_decay=cfg_eval.wd,
+        bn_mode=getattr(cfg_eval, "bn_mode", "ema"),
     )
 
     log_result = {k: v for k, v in eval_result.items() if k not in ("top1", "top5")}
@@ -224,7 +222,6 @@ def train_ijepa(
     mask_cfg = cfg.mask
     eval_cfg = cfg.eval
 
-    # Setup
     key = jax.random.key(train_cfg.seed)
     print(f"JAX backend: {jax.devices()[0].platform}")
     print(f"JAX devices: {jax.devices()}")
@@ -251,7 +248,6 @@ def train_ijepa(
     logf = open(f"{save_dir}/{run_name}_log.txt", "w")
     logf.write("epoch,itr,loss,mask-A,mask-B,time (ms)\n")
 
-    # Create dataset
     dataloader, num_classes, steps_per_epoch, img_size = build_dataloader(
         data_cfg.dataset,
         data_cfg.data_dir,
@@ -277,7 +273,6 @@ def train_ijepa(
             seed=train_cfg.seed,
         )
 
-    # Masker
     masker = IJEPAMasker(
         height=img_size,
         width=img_size,
@@ -288,7 +283,6 @@ def train_ijepa(
         pred_aspect=tuple(mask_cfg.pred_aspect),
     )
 
-    # Initialize model
     key, key_model = jax.random.split(key)
     model, embed_dim = get_ijepa_model(
         model_cfg.name,
@@ -301,7 +295,6 @@ def train_ijepa(
     )
     ema_encoder = jax.tree.map(lambda x: x, model.encoder)
 
-    # Optimizer
     lr_schedule = optax.warmup_cosine_decay_schedule(
         init_value=train_cfg.start_lr,
         peak_value=train_cfg.lr,
@@ -341,6 +334,7 @@ def train_ijepa(
     # Init logging
     if use_wandb:
         import wandb
+
         wandb.init(
             entity=wandb_entity,
             project=wandb_project,
@@ -348,13 +342,11 @@ def train_ijepa(
             config=hparams,
         )
 
-    # Shard model
     if model_sharding is not None:
         model, ema_encoder, opt_state = eqx.filter_shard(
             (model, ema_encoder, opt_state), model_sharding
         )
 
-    # JIT compiled functions
     @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, key):
         loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, key)
@@ -369,7 +361,6 @@ def train_ijepa(
         mask_keys = jax.random.split(key, batch_size)
         return jax.vmap(lambda k: masker(k, num_pred_masks, flatten=True))(mask_keys)
 
-    # Training loop
     step = start_epoch * steps_per_epoch
 
     for epoch in range(start_epoch, train_cfg.epochs):
@@ -391,7 +382,6 @@ def train_ijepa(
                 Path(profile_log_dir).mkdir(parents=True, exist_ok=True)
                 jax.profiler.start_trace(profile_log_dir)
 
-            # Generate masks
             mask_time = time.time()
             key, mask_key, ema_key, step_key = jax.random.split(key, 4)
             mask_ctx, mask_pred = generate_masks(
@@ -407,26 +397,22 @@ def train_ijepa(
                 mask_ctx = jax.device_put(mask_ctx, data_sharding)
                 mask_pred = jax.device_put(mask_pred, data_sharding)
 
-            # Target representations
             target_time = time.time()
             z_ema = compute_target_reps(ema_encoder, x, ema_key)
             if normalize_tgt:
                 z_ema = normalize_targets(z_ema)
             target_time = time.time() - target_time
 
-            # Debug info on first step
             if step == start_epoch * steps_per_epoch:
                 model_dtype = jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype
                 print(f"model dtype: {model_dtype}")
                 print(f"x: {x.shape}, dtype: {x.dtype}")
                 print(f"z_ema: {z_ema.shape}, dtype: {z_ema.dtype}")
 
-            # Train step
             step_time = time.time()
             model, opt_state, loss = step_model(
                 model, opt_state, x, z_ema, mask_ctx, mask_pred, step_key
             )
-            # EMA with linear schedule
             ema_decay = ema_start + (ema_end - ema_start) * (step / total_steps)
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
@@ -446,7 +432,6 @@ def train_ijepa(
             step += 1
             epoch_losses.append(loss)
 
-            # Logging
             step_ms = int(step_time * 1000)
             logf.write(f"{epoch + 1},{step},{loss:.5f},{mask_a},{mask_b},{step_ms}\n")
 
@@ -454,6 +439,7 @@ def train_ijepa(
                 logf.flush()
                 if use_wandb:
                     import wandb
+
                     wandb.log(
                         {
                             "loss": loss.item(),
@@ -468,12 +454,14 @@ def train_ijepa(
                     )
 
             pbar.set_postfix(
-                OrderedDict([
-                    ("loss", f"{loss:.4f}"),
-                    ("A", mask_a),
-                    ("B", mask_b),
-                    ("ms", step_ms),
-                ])
+                OrderedDict(
+                    [
+                        ("loss", f"{loss:.4f}"),
+                        ("A", mask_a),
+                        ("B", mask_b),
+                        ("ms", step_ms),
+                    ]
+                )
             )
             load_time = time.time()
 
@@ -485,7 +473,7 @@ def train_ijepa(
             probe_time = time.time()
             key, eval_key = jax.random.split(key)
             print("Running linear probe evaluation...")
-            eval_result, log_result = eval_probe(
+            eval_result = eval_probe(
                 encoder=ema_encoder,
                 embed_dim=embed_dim,
                 train_loader=dataloader,
@@ -495,23 +483,23 @@ def train_ijepa(
                 cfg_eval=eval_cfg,
             )
             probe_time = time.time() - probe_time
-            top1 = eval_result["top1"]
-            top5 = eval_result["top5"]
+            best_top1 = max(v for k, v in eval_result.items() if k.endswith("_top1"))
+            best_top5 = max(v for k, v in eval_result.items() if k.endswith("_top5"))
             print(
-                f"Epoch {epoch + 1}: top1 {top1 * 100:.2f}%, "
-                f"top5 {top5 * 100:.2f}% ({probe_time:.1f}s)"
+                f"Epoch {epoch + 1}: best top1 {best_top1 * 100:.2f}%, "
+                f"top5 {best_top5 * 100:.2f}% ({probe_time:.1f}s)"
             )
             if use_wandb:
                 import wandb
+
                 wandb.log(
                     {
                         "probe/time_s": probe_time,
-                        **{f"probe/{k}": v * 100 for k, v in log_result.items()},
+                        **{f"probe/{k}": v * 100 for k, v in eval_result.items()},
                     },
                     step=step,
                 )
 
-        # Epoch summary
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         epoch_time = time.time() - time_ep_start
         print(
@@ -520,6 +508,7 @@ def train_ijepa(
         )
         if use_wandb:
             import wandb
+
             wandb.log(
                 {"epoch/avg_loss": avg_loss, "epoch/time_s": epoch_time},
                 step=step,

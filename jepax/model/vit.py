@@ -21,8 +21,7 @@ def get_vit_config(
 ) -> dict:
     if name not in vit_classifier_configs:
         raise ValueError(
-            f"Unknown config: {name}. "
-            f"Choose from {list(vit_classifier_configs.keys())}"
+            f"Unknown config: {name}. Choose from {list(vit_classifier_configs.keys())}"
         )
 
     return {
@@ -35,14 +34,12 @@ def get_vit_config(
 
 def get_vit_clf_model(
     name: str, num_classes: int = 10, *, key: Key[Array, ""], **kwargs
-) -> "ViTclassifier":
+):
     config = get_vit_config(name, num_classes, **kwargs)
     return ViTclassifier(**config, key=key)
 
 
 class PatchEmbedding(eqx.Module):
-    """Linear patch embedding layer."""
-
     linear: eqx.nn.Linear
     patch_size: int
 
@@ -60,9 +57,7 @@ class PatchEmbedding(eqx.Module):
             key=key,
         )
 
-    def __call__(
-        self, x: Float[Array, "C H W"]
-    ) -> Float[Array, "N D"]:
+    def __call__(self, x: Float[Array, "C H W"]) -> Float[Array, "N D"]:
         x = einops.rearrange(
             x,
             "c (h ph) (w pw) -> (h w) (c ph pw)",
@@ -74,8 +69,6 @@ class PatchEmbedding(eqx.Module):
 
 
 class ViTclassifier(eqx.Module):
-    """Vision Transformer for classification."""
-
     embed: PatchEmbedding
     transformer: Transformer
     clf: eqx.nn.Linear

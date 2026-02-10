@@ -34,8 +34,6 @@ class TorchDataSource(grain.RandomAccessDataSource):
 
     def __getitem__(self, idx):
         img, label = self.data[idx]
-        # img = np.array(img)                 # (C, H, W)
-        # img = np.transpose(img, (1, 2, 0))  # (H, W, C)
         return {"image": img, "label": label}
 
 
@@ -50,7 +48,6 @@ class RandomResizedCrop(grain.MapTransform):
         w, h = img.size
         area = w * h
 
-        # Try up to 10 times to find valid crop
         for _ in range(10):
             target_area = area * np.random.uniform(*self.scale)
             aspect = np.exp(
@@ -134,7 +131,6 @@ def build_dataloader(
     shuffle=False,
     prefetch_factor=4,
     seed=0,
-    sharding=None,
 ):
     dataset_name = dataset_name.upper()
 
@@ -200,7 +196,6 @@ def build_torch_dataloader(
     pin_memory=True,
     persistent_workers=True,
     prefetch_factor=4,
-    sharding=None,
 ):
     dataset_name = dataset_name.upper()
 

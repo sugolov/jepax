@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Download ImageNet from HuggingFace with retry logic for unstable networks.
 
@@ -35,7 +34,7 @@ def download_with_retry(split, max_retries=5):
                 "ILSVRC/imagenet-1k",
                 split=split,
                 trust_remote_code=True,
-                num_proc=1,  # avoid multiprocessing issues on unstable networks
+                num_proc=1,
             )
             return dataset
         except Exception as e:
@@ -78,9 +77,6 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Downloading ImageNet to {data_dir}")
-    print(
-        "Note: Accept license at https://huggingface.co/datasets/ILSVRC/imagenet-1k\n"
-    )
 
     splits = []
     if args.split == "both":
