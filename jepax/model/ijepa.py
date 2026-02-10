@@ -1,7 +1,7 @@
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Key, PRNGKeyArray
+from jaxtyping import Array, Float, Key
 
 from jepax.model.transformer import (
     PositionalEncoding2D,
@@ -10,7 +10,6 @@ from jepax.model.transformer import (
 from jepax.model.vit import PatchEmbedding
 
 
-# Encoder configs (same as ViT)
 ijepa_encoder_configs = {
     "vit-ti": {"dim": 192, "num_layers": 12, "num_head": 3, "mlp_ratio": 4.0},
     "vit-s": {"dim": 384, "num_layers": 12, "num_head": 6, "mlp_ratio": 4.0},
@@ -20,7 +19,6 @@ ijepa_encoder_configs = {
     "test": {"dim": 64, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
 }
 
-# Predictor configs
 ijepa_predictor_configs = {
     "pred-ti": {"latent_dim": 96, "num_layers": 6, "num_head": 3, "mlp_ratio": 4.0},
     "pred-s": {"latent_dim": 192, "num_layers": 6, "num_head": 6, "mlp_ratio": 4.0},
@@ -30,7 +28,6 @@ ijepa_predictor_configs = {
     "test": {"latent_dim": 32, "num_layers": 2, "num_head": 2, "mlp_ratio": 2.0},
 }
 
-# Combined IJEPA configs (encoder_name, predictor_name)
 ijepa_configs = {
     "ijepa-ti": ("vit-ti", "pred-ti"),
     "ijepa-s": ("vit-s", "pred-s"),
@@ -96,7 +93,7 @@ def get_ijepa_config(name: str):
 def get_ijepa_model(
     name: str,
     *,
-    key: PRNGKeyArray,
+    key: Key[Array, ""],
     num_channels: int = 3,
     patch_size: int = 16,
     img_size: int = 224,
@@ -167,7 +164,7 @@ class IJEPAEncoder(eqx.Module):
         p_drop: float = 0.1,
         seq_len: int = 2048,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ):
         k1, k2 = jax.random.split(key, 2)
         grid_size = img_size // patch_size
@@ -187,37 +184,33 @@ class IJEPAEncoder(eqx.Module):
         self.dim = dim
         self.seq_len = seq_len
 
-    def __call__(
-        self, key, x, mask=None, train=True, get_intermediates=False
-    ):
+    def __call__(self, key, x, mask=None, train=True, get_intermediates=False):
         """
         Args:
             x: image [H, W, C]
-            mask: boolean mask [N_patches] where True = visible context patch (flattened)
+            mask: bool mask [N_patches], True = visible context (flat)
         """
         x = self.embed(x)  # [N_patches, D]
         n_patches = x.shape[0]
 
         if mask is not None:
-            mask_flat = mask.reshape(-1)  # Ensure 1D
+            mask_flat = mask.reshape(-1)
             indices, n_keep = mask_to_indices(mask_flat, n_patches)
 
             # Gather visible patches
-            x_gathered = x[indices]  # [n_patches, D] but only first n_keep are valid
+            x_gathered = x[indices]
 
-            # Add positional embeddings for the gathered positions
-            pos_emb = self.pe._get_pe_from_grid(self.pe.grid)  # [N_patches, D]
+            pos_emb = self.pe._get_pe_from_grid(self.pe.grid)
             pos_gathered = pos_emb[indices]
             x_gathered = x_gathered + pos_gathered
 
-            # Zero out padding positions (indices beyond n_keep point to arbitrary positions)
+            # Zero out padding positions
             valid_mask = jnp.arange(n_patches) < n_keep
             x_gathered = jnp.where(valid_mask[:, None], x_gathered, 0.0)
 
             # Attention mask: only attend to first n_keep positions
             attn_mask = valid_mask[:, None] & valid_mask[None, :]
         else:
-            # No masking - process all patches
             x_gathered = self.pe(x)
             attn_mask = None
             n_keep = n_patches
@@ -228,7 +221,7 @@ class IJEPAEncoder(eqx.Module):
             attn_mask=attn_mask,
             key=key,
             train=train,
-            use_pe=False,  # We already added PE
+            use_pe=False,
             get_intermediates=get_intermediates,
         )
 
@@ -259,7 +252,7 @@ class IJEPAPredictor(eqx.Module):
         p_drop: float = 0.1,
         seq_len: int = 2048,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ):
         k1, k2, k3, k4 = jax.random.split(key, 4)
 
@@ -306,20 +299,17 @@ class IJEPAPredictor(eqx.Module):
         # Project context to predictor dimension
         ctx_proj = jax.vmap(self.in_proj)(ctx_emb)  # [seq_len, latent_dim]
 
-        # Add positional embeddings for context positions
-        pos_emb_full = self.pe._get_pe_from_grid(self.pe.grid)  # [N_patches, latent_dim]
+        pos_emb_full = self.pe._get_pe_from_grid(
+            self.pe.grid
+        )  # [N_patches, latent_dim]
         ctx_pos = pos_emb_full[ctx_indices]  # [seq_len, latent_dim]
         ctx_proj = ctx_proj + ctx_pos
 
         # Create pred_tokens with target positional embeddings
-        tgt_pos = pos_emb_full[tgt_indices]  # [seq_len, latent_dim]
-        pred_tokens = self.pred_token + tgt_pos  # [seq_len, latent_dim]
+        tgt_pos = pos_emb_full[tgt_indices]
+        pred_tokens = self.pred_token + tgt_pos
 
-        # Concatenate: [context (n_ctx), pred_tokens (n_tgt), padding]
-        # We'll interleave: first n_ctx context, then n_tgt pred_tokens
         total_valid = n_ctx + n_tgt
-
-        # Build combined sequence
         combined = jnp.zeros((seq_len, self.latent_dim))
 
         # Place context tokens (first n_ctx positions)
@@ -333,17 +323,14 @@ class IJEPAPredictor(eqx.Module):
         pred_tokens_shifted = pred_tokens[tgt_shifted_idx]
         combined = jnp.where(tgt_mask[:, None], pred_tokens_shifted, combined)
 
-        # Attention mask: only attend to first total_valid positions
+        # only attend to first total_valid positions
         valid_mask = jnp.arange(seq_len) < total_valid
         attn_mask = valid_mask[:, None] & valid_mask[None, :]
 
-        # Run transformer
-        out = self.transformer(combined, attn_mask=attn_mask, key=key, train=train, use_pe=False)
-
-        # Apply final layer norm (like reference)
+        out = self.transformer(
+            combined, attn_mask=attn_mask, key=key, train=train, use_pe=False
+        )
         out = jax.vmap(self.norm)(out)
-
-        # Project back to encoder dimension
         out = jax.vmap(self.out_proj)(out)
 
         # Return predictions at target positions (n_ctx to n_ctx + n_tgt)
@@ -362,14 +349,14 @@ class IJEPA(eqx.Module):
         """
         Args:
             x: image [H, W, C]
-            mask_ctx: context block mask [N_patches], True = in context block (flattened)
+            mask_ctx: context mask [N_patches], True = context (flat)
             mask_pred: target masks [M, N_patches], True = target position (flattened)
         """
         k1, k2 = jax.random.split(key, 2)
 
         # Encoder mask: context minus targets
         mask_tgt = jnp.any(mask_pred, axis=0)  # [N_patches]
-        mask_enc = mask_ctx & ~mask_tgt  # [N_patches]
+        mask_enc = mask_ctx & ~mask_tgt
 
         # Encode visible context patches
         z_enc, ctx_indices, n_ctx = self.encoder(k1, x, mask_enc, train=train)
@@ -379,7 +366,6 @@ class IJEPA(eqx.Module):
         n_patches = tgt_flat.shape[0]
         tgt_indices, n_tgt = mask_to_indices(tgt_flat, n_patches)
 
-        # Predict
         z_pred, pred_start, pred_end = self.predictor(
             k2,
             ctx_emb=z_enc,

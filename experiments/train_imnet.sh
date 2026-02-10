@@ -10,7 +10,7 @@ source .venv/bin/activate
 
 export WANDB_API_KEY="$1"
 
-nohup python -m jepax.train.train_ijepa --config configs/imagenet.yaml > train.log 2>&1 &
+nohup python -m jepax.train.train_ijepa --config configs/imagenet_huge.yaml > train.log 2>&1 &
 
 echo "Training started with PID $!"
 echo "Logs: tail -f train.log"

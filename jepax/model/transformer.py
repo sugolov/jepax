@@ -10,6 +10,7 @@ from jaxtyping import Array, Float, Key
 class PositionalEncoding(eqx.Module):
     """Sinusoidal positional encoding."""
 
+    # todo: fix
     pe: Array = eqx.field(static=True)
     dim: int = eqx.field(static=True)
 
@@ -69,8 +70,6 @@ class PositionalEncoding2D(PositionalEncoding):
 
 
 class FeedForward(eqx.Module):
-    """Standard ViT MLP: Linear -> GELU -> Linear."""
-
     linear1: eqx.nn.Linear
     linear2: eqx.nn.Linear
 
@@ -151,8 +150,6 @@ class Attention(eqx.Module):
 
 
 class TransformerBlock(eqx.Module):
-    """Transformer block with pre-norm."""
-
     attn: Attention
     ff: FeedForward
     ln1: eqx.nn.LayerNorm
@@ -189,11 +186,9 @@ class TransformerBlock(eqx.Module):
         else:
             k1 = k2 = None
 
-        # Pre-norm: x = x + attn(LN(x))
         attn_out = self.attn(jax.vmap(self.ln1)(x), mask=attn_mask)
         x = x + self.dropout(attn_out, key=k1, inference=not train)
 
-        # Pre-norm: x = x + ff(LN(x))
         ff_out = self.ff(jax.vmap(self.ln2)(x))
         x = x + self.dropout(ff_out, key=k2, inference=not train)
 
@@ -201,8 +196,6 @@ class TransformerBlock(eqx.Module):
 
 
 class Transformer(eqx.Module):
-    """Transformer encoder."""
-
     blocks: list
     pe: PositionalEncoding
 

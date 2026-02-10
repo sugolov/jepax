@@ -214,3 +214,4 @@ slurm
 *.DS_Store
 claude*
 scratch/
+experiments/*slurm*
