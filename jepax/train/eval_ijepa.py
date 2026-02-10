@@ -1,8 +1,7 @@
 """Linear probe evaluation for I-JEPA.
 
-Two modes:
-- paper: LARS optimizer, optionally with BatchNorm, tests last-layer and concat-4
-- simple: sklearn LogisticRegression on last-layer only
+Paper protocol: test (last-layer / concat-4) x (with / without BN), report best.
+Uses LARS with step-wise LR decay (÷10 every 15 epochs) following MAE.
 """
 import gc
 import warnings
@@ -12,7 +11,6 @@ import jax
 import numpy as np
 import optax
 from jax import numpy as jnp
-from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -80,28 +78,6 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
 
     gc.collect()
     return last, concat, labels
-
-
-# -----------------------------------------------------------------------------
-# Simple mode: sklearn LogisticRegression
-# -----------------------------------------------------------------------------
-
-
-def _eval_simple(train_feats, train_labels, val_feats, val_labels):
-    """Simple sklearn logistic regression probe."""
-    from sklearn.linear_model import LogisticRegression
-
-    clf = LogisticRegression(max_iter=100, n_jobs=-1, verbose=0)
-    clf.fit(train_feats, train_labels)
-
-    probs = clf.predict_proba(val_feats)
-    preds = probs.argmax(axis=-1)
-
-    top1 = float((preds == val_labels).mean())
-    top5_idx = np.argsort(probs, axis=-1)[:, -5:]
-    top5 = float(np.any(top5_idx == val_labels[:, None], axis=-1).mean())
-
-    return top1, top5
 
 
 # -----------------------------------------------------------------------------
@@ -235,7 +211,6 @@ def evaluate_linear_probe(
     val_loader,
     num_classes,
     key,
-    mode="paper",
     n_concat=4,
     n_epochs=50,
     lr=0.1,
@@ -247,23 +222,19 @@ def evaluate_linear_probe(
     verbose=True,
     **kwargs,
 ):
-    """Evaluate linear probe.
-
-    Args:
-        mode: "paper" (LARS + BN option, test last & concat) or "simple" (sklearn)
-    """
+    """Evaluate linear probe across all configurations (last, last_bn, concat, concat_bn)."""
     key, k1, k2 = jax.random.split(key, 3)
 
     if verbose:
         print("Probe: extracting train features")
     train_last, train_concat, train_labels = extract_features(
-        encoder, train_loader, k1, max_train_samples, n_concat if mode == "paper" else 1
+        encoder, train_loader, k1, max_train_samples, n_concat
     )
 
     if verbose:
         print("Probe: extracting val features")
     val_last, val_concat, val_labels = extract_features(
-        encoder, val_loader, k2, max_val_samples, n_concat if mode == "paper" else 1
+        encoder, val_loader, k2, max_val_samples, n_concat
     )
 
     if verbose:
@@ -272,15 +243,7 @@ def evaluate_linear_probe(
             shapes += f" (concat: {train_concat.shape})"
         print(f"Probe: {shapes}")
 
-    if mode == "simple":
-        if verbose:
-            print("Probe: sklearn logistic regression")
-        top1, top5 = _eval_simple(train_last, train_labels, val_last, val_labels)
-        return {"top1": top1, "top5": top5}
-
-    # Paper mode: test multiple configurations, report best
     results = {}
-    best_top1, best_top5 = 0.0, 0.0
 
     configs = [
         ("last", train_last, val_last, embed_dim, False),
@@ -303,12 +266,7 @@ def evaluate_linear_probe(
         )
         results[f"{name}_top1"] = t1
         results[f"{name}_top5"] = t5
-        best_top1 = max(best_top1, t1)
-        best_top5 = max(best_top5, t5)
         if verbose:
             print(f"  {name}: top1={t1*100:.2f}%, top5={t5*100:.2f}%")
 
-    # Best across all configs (for printing/summary)
-    results["top1"] = best_top1
-    results["top5"] = best_top5
     return results

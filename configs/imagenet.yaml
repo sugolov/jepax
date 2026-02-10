@@ -41,7 +41,7 @@ mask:
   ctx_aspect: 1.0
 
 eval:
-  mode: simple  # paper (LARS + BN option) or simple (sklearn logreg)
+  mode: last  # last, last_bn, concat, or concat_bn
   interval: 30
   epochs: 50
   batch_size: 16384
