@@ -197,11 +197,18 @@ def normalize_targets(z_ema):
     var = jnp.var(z_ema, axis=-1, keepdims=True)
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
 
-
 @eqx.filter_value_and_grad
 def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
+    """Compute loss and gradients.
+
+    Model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
+    - z_pred: [seq_len, D] - predictions at positions [pred_start:pred_end]
+    - tgt_indices: [seq_len] - indices of target patches, first n_tgt valid
+    - n_tgt: number of target patches
+    - pred_start, pred_end: slice indices for predictions
+    """
     keys = jax.random.split(key, x_b.shape[0])
-    seq_len = z_ema.shape[1]
+    seq_len = z_ema.shape[1]  # N_patches
 
     z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
         lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
@@ -210,21 +217,30 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
     z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
 
-    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)
+    # Gather target representations from z_ema
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # [B, seq_len, D]
 
+    # Create aligned arrays for comparison:
+    # z_pred has predictions at positions [pred_start:pred_end]
+    # z_tgt has targets at positions [0:n_tgt]
+
+    # Shift z_pred so predictions start at position 0
     def shift_pred(z_p, ps):
+        # Roll to bring pred_start to position 0
         return jnp.roll(z_p, -ps, axis=0)
 
     z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
 
-    pos_idx = jnp.arange(seq_len)[None, :]
-    valid_mask = pos_idx < n_tgt[:, None]
+    # Now z_pred_shifted[0:n_tgt] should match z_tgt[0:n_tgt]
+    pos_idx = jnp.arange(seq_len)[None, :]  # [1, seq_len]
+    valid_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
 
     diff = z_pred_shifted - z_tgt
     abs_diff = jnp.abs(diff)
     smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
 
-    loss_per_token = jnp.mean(smooth_l1, axis=-1)
+    # Mean over feature dimension, then masked mean over sequence
+    loss_per_token = jnp.mean(smooth_l1, axis=-1)  # [B, seq_len]
     loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
 
     return loss
@@ -443,10 +459,8 @@ def train_ijepa(
             step_time = time.time() - step_time
 
             # mask stats
-            mask_ctx_pct = float(jnp.mean(mask_ctx)) * 100
-            mask_pred_pct = float(jnp.mean(mask_pred)) * 100
-            mask_ctx_avg = float(jnp.mean(jnp.sum(mask_ctx, axis=-1)))
-            mask_pred_avg = float(jnp.mean(jnp.sum(mask_pred.any(axis=-2), axis=-1)))
+            mask_a = int(jnp.sum(mask_ctx[0]))  # context patches
+            mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))  # target patches
 
             # profiler end
             if profile and step == profile_end_step:
@@ -459,7 +473,7 @@ def train_ijepa(
             epoch_losses.append(loss)
             step_ms = int(step_time * 1000)
 
-            logf.write(f"{epoch + 1},{step},{loss:.5f},{mask_ctx_avg:.1f},{mask_pred_avg:.1f},{mask_ctx_pct:.1f},{mask_pred_pct:.1f},{step_ms}\n")
+            logf.write(f"{epoch + 1},{step},{loss:.5f},{mask_a},{mask_b},{step_ms}\n")
 
             if step % 100 == 0:
                 logf.flush()
@@ -471,10 +485,8 @@ def train_ijepa(
                             "schedule/lr": float(lr_schedule(step)),
                             "schedule/wd": float(wd_schedule(step)),
                             "schedule/ema_enc": float(ema_scheduler(step)),
-                            "mask/ctx_patches": mask_ctx_avg,
-                            "mask/pred_patches": mask_pred_avg,
-                            "mask/ctx_pct": mask_ctx_pct,
-                            "mask/pred_pct": mask_pred_pct,
+                            "mask_a": mask_a,
+                            "mask_b": mask_b,
                             **{f"grad/{k}": float(v) for k, v in grad_norms.items()},
                         },
                         step=step,
@@ -482,8 +494,8 @@ def train_ijepa(
 
             pbar.set_postfix(OrderedDict([
                 ("loss", f"{loss:.3f}"),
-                ("ctx", f"{mask_ctx_avg:.0f}/{mask_ctx_pct:.0f}%"),
-                ("pred", f"{mask_pred_avg:.0f}/{mask_pred_pct:.0f}%"),
+                ("mask_A", mask_a),
+                ("mask_B", mask_b),
                 ("load_ms", int(load_time * 1000)),
                 ("step_ms", int(step_time * 1000)),
                 ("tgt_ms", int(target_time * 1000)),
