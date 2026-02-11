@@ -25,9 +25,13 @@ urls = { repository = "https://github.com/sugolov/jepax" }
 license = {file = "LICENSE"}
 
 dependencies = [
+    "dacite>=2.2.0",
     "einops>=0.8.1",
     "equinox>=0.13.2",
+    "flax>=0.10.0",
     "grain>=0.2.0",
+    "jax>=0.6.0",
+    "numpy>=1.26.0",
     "optax>=0.2.6",
     "pyyaml>=6.0",
     "torch>=2.9.1",
@@ -36,10 +40,13 @@ dependencies = [
 
 [project.optional-dependencies]
 experiments = [
-    "wandb>=0.18.0",
-    "tqdm>=4.67.1",
+    "aim>=3.25.0",
+    "datasets>=3.0.0",
+    "huggingface_hub>=0.25.0",
     "matplotlib>=3.10.7",
     "pytest>=9.0.1",
+    "tqdm>=4.67.1",
+    "wandb>=0.18.0",
 ]
 
 [build-system]
