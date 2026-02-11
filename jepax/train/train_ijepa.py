@@ -144,7 +144,6 @@ def to_bf16(x):
         return x.astype(jnp.bfloat16)
     return x
 
-
 def eval_probe(
     encoder,
     embed_dim,
@@ -233,7 +232,6 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
     return loss
 
 def get_grad_norms(grads):
-
     # track gradient statistics
     grad_stats = {}
     enc_blocks = grads.encoder.transformer.blocks
