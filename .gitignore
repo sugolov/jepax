@@ -215,3 +215,8 @@ slurm
 claude*
 scratch/
 experiments/*slurm*
+
+.checkpoints
+.logs
+profiles
+wandb/

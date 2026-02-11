@@ -22,7 +22,12 @@ python -m jepax.train.train_ijepa \
     --profile_log_dir .logs
 ```
 
-
+```
+--profile \
+--profile_start_step 5 \
+--profile_end_step 10 \
+--profile_log_dir .logs
+```
 ## Installation
 
 ```bash
@@ -64,14 +69,6 @@ python jepax/data/download_imagenet.py --data_dir ~/your/data/dir
 - make sure eval is correctly sharded and is not OOMing
 - think about sharding predictor to a different gpu
 - initialize vit weights correctly
-- triple check configs with ijepa paper
-- gpu profile
-- compute mfu
-- add imnet22k download option
-- increase wd linearly
-- increase momentum linearly
-- DOUBLE CHECK loss and implementation
-- linear eval on last 4 layers and last layer
 
 ## Future Development
 

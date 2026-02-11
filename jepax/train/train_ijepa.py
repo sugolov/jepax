@@ -15,6 +15,7 @@ import jax.sharding as jshard
 import optax
 from jax import numpy as jnp
 from tqdm import tqdm
+
 import wandb
 
 
@@ -49,6 +50,68 @@ def parse_args():
     p.add_argument("--profile_log_dir", type=str, default=".logs")
     return p.parse_args()
 
+def init_from_config(cfg: Config, img_size: int, steps_per_epoch: int, key):
+    model_cfg, train_cfg, mask_cfg = cfg.model, cfg.train, cfg.mask
+    total_steps = train_cfg.epochs * steps_per_epoch
+
+    masker = IJEPAMasker(
+        height=img_size,
+        width=img_size,
+        patch_size=model_cfg.patch_size,
+        ctx_scale=tuple(mask_cfg.ctx_scale),
+        ctx_aspect=mask_cfg.ctx_aspect,
+        pred_scale=tuple(mask_cfg.pred_scale),
+        pred_aspect=tuple(mask_cfg.pred_aspect),
+    )
+
+    key, key_model = jax.random.split(key)
+    model, embed_dim = get_ijepa_model(
+        model_cfg.name,
+        key=key_model,
+        num_channels=model_cfg.num_channels,
+        patch_size=model_cfg.patch_size,
+        img_size=img_size,
+        p_drop=model_cfg.p_drop,
+        seq_len=model_cfg.seq_len,
+    )
+    ema_encoder = jax.tree.map(lambda x: x, model.encoder)
+
+    lr_schedule = optax.warmup_cosine_decay_schedule(
+        init_value=train_cfg.start_lr,
+        peak_value=train_cfg.lr,
+        end_value=train_cfg.final_lr,
+        warmup_steps=train_cfg.warmup_epochs * steps_per_epoch,
+        decay_steps=total_steps,
+    )
+
+    final_wd = getattr(train_cfg, "final_wd", None)
+    if final_wd is None:
+        wd_schedule = lambda _: train_cfg.wd
+    else:
+        wd_schedule = optax.linear_schedule(
+            init_value=train_cfg.wd,
+            end_value=final_wd,
+            transition_steps=total_steps,
+        )
+
+    optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=wd_schedule)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+
+    normalize_tgt = train_cfg.normalize_targets
+    print(f"Target normalization: {normalize_tgt}")
+
+    ema_scheduler = optax.linear_schedule(
+        init_value=train_cfg.ema_start,
+        end_value=train_cfg.ema_end,
+        transition_steps=total_steps,
+    )
+    print(f"EMA schedule: {train_cfg.ema_start} -> {train_cfg.ema_end}")
+
+    return (
+        model, ema_encoder, optimizer, opt_state, masker,
+        lr_schedule, wd_schedule, ema_scheduler, embed_dim,
+        normalize_tgt, key,
+    )
 
 def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: Config, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
@@ -58,48 +121,23 @@ def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: Config, path):
     with open(path + "_meta.yaml", "w") as f:
         yaml.dump({"epoch": epoch, "config": asdict(cfg)}, f, default_flow_style=False)
 
-def load_checkpoint(path, img_size, steps_per_epoch):
-
+def load_checkpoint(path, img_size, steps_per_epoch, key):
     with open(path + "_meta.yaml", "r") as f:
-        checkpoint = yaml.safe_load(f)
+        meta = yaml.safe_load(f)
 
-    cfg = dacite.from_dict(Config, checkpoint["config"], config=dacite.Config(cast=[tuple]))
+    cfg = dacite.from_dict(Config, meta["config"], config=dacite.Config(cast=[tuple]))
 
-    model, embed_dim = get_ijepa_model(
-        cfg.model.name,
-        key=jax.random.key(cfg.train.seed),
-        num_channels=cfg.model.num_channels,
-        patch_size=cfg.model.patch_size,
-        img_size=img_size,
-        p_drop=cfg.model.p_drop,
-        seq_len=cfg.model.seq_len,
-    )
+    (model, ema_encoder, optimizer, opt_state, masker,
+    lr_schedule, wd_schedule, ema_scheduler, embed_dim,
+    normalize_tgt, key) = init_from_config(cfg, img_size, steps_per_epoch, key)
+
     model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
-    ema_encoder = eqx.tree_deserialise_leaves(path + "_ema_enc.eqx", model.encoder)
-
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=cfg.train.start_lr,
-        peak_value=cfg.train.lr,
-        end_value=cfg.train.final_lr,
-        warmup_steps=cfg.train.warmup_epochs * steps_per_epoch,
-        decay_steps=cfg.train.epochs * steps_per_epoch,
-    )
-
-    if cfg.train.final_wd is None:
-        wd_schedule = lambda _: cfg.train.wd
-    else:
-        wd_schedule = optax.linear_schedule(
-            init_value=cfg.train.wd,
-            end_value=cfg.train.final_wd,
-            transition_steps=cfg.train.epochs * steps_per_epoch,
-        )
-
-    optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=wd_schedule)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+    ema_encoder = eqx.tree_deserialise_leaves(path + "_ema_enc.eqx", ema_encoder)
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
 
-    return model, ema_encoder, optimizer, opt_state, checkpoint["epoch"], lr_schedule, wd_schedule, cfg, embed_dim, 
-
+    return meta["epoch"], cfg, (model, ema_encoder, optimizer, opt_state, masker,
+        lr_schedule, wd_schedule, ema_scheduler, embed_dim,
+        normalize_tgt, key,)
 
 def to_bf16(x):
     if eqx.is_array(x) and jnp.issubdtype(x.dtype, jnp.floating):
@@ -275,6 +313,7 @@ def train_ijepa(
     logf = open(f"{save_dir}/{run_name}_log.txt", "w")
     logf.write("epoch,step,loss,ctx_patches,pred_patches,ctx_pct,pred_pct,step_ms\n")
 
+    # data loader creation
     dataloader, num_classes, steps_per_epoch, img_size = build_dataloader(
         data_cfg.dataset,
         data_dir,
@@ -285,7 +324,6 @@ def train_ijepa(
         is_train=True,
         seed=train_cfg.seed,
     )
-
     val_loader = None
     if eval_cfg.interval > 0:
         val_loader, _, _, _ = build_dataloader(
@@ -298,82 +336,43 @@ def train_ijepa(
             is_train=False,
             seed=train_cfg.seed,
         )
-
-    masker = IJEPAMasker(
-        height=img_size,
-        width=img_size,
-        patch_size=model_cfg.patch_size,
-        ctx_scale=tuple(mask_cfg.ctx_scale),
-        ctx_aspect=mask_cfg.ctx_aspect,
-        pred_scale=tuple(mask_cfg.pred_scale),
-        pred_aspect=tuple(mask_cfg.pred_aspect),
-    )
-
-    key, key_model = jax.random.split(key)
-    model, embed_dim = get_ijepa_model(
-        model_cfg.name,
-        key=key_model,
-        num_channels=model_cfg.num_channels,
-        patch_size=model_cfg.patch_size,
-        img_size=img_size,
-        p_drop=model_cfg.p_drop,
-        seq_len=model_cfg.seq_len,
-    )
-    ema_encoder = jax.tree.map(lambda x: x, model.encoder)
-
-    lr_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=train_cfg.start_lr,
-        peak_value=train_cfg.lr,
-        end_value=train_cfg.final_lr,
-        warmup_steps=train_cfg.warmup_epochs * steps_per_epoch,
-        decay_steps=train_cfg.epochs * steps_per_epoch,
-    )
-
-    final_wd = getattr(train_cfg, "final_wd", None)
-    if final_wd is None:
-        wd_schedule = lambda _: train_cfg.wd
+    
+    if resume is None:
+        start_epoch = 0
+        (model, ema_encoder, optimizer, opt_state, masker,
+        lr_schedule, wd_schedule, ema_scheduler, embed_dim,
+        normalize_tgt, key,
+        ) = init_from_config(cfg, img_size, steps_per_epoch, key)
     else:
-        wd_schedule = optax.linear_schedule(
-            init_value=train_cfg.wd,
-            end_value=final_wd,
-            transition_steps=train_cfg.epochs * steps_per_epoch,
-        )
+        start_epoch, cfg, (model, ema_encoder, optimizer, opt_state, masker,
+        lr_schedule, wd_schedule, ema_scheduler, embed_dim,
+        normalize_tgt, key,
+        ) = load_checkpoint(resume, img_size, steps_per_epoch, key)
 
-    optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=wd_schedule)
-    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+        # refresh 
+        data_cfg = cfg.data
+        model_cfg = cfg.model
+        train_cfg = cfg.train
+        mask_cfg = cfg.mask
+        eval_cfg = cfg.eval
 
-    normalize_tgt = train_cfg.normalize_targets
-    print(f"Target normalization: {normalize_tgt}")
-
-    # EMA schedule
-    ema_scheduler = optax.linear_schedule(
-        init_value=train_cfg.ema_start,
-        end_value=train_cfg.ema_end,
-        transition_steps=train_cfg.epochs * steps_per_epoch
-    )
-
-    print(f"EMA schedule: {train_cfg.ema_start} -> {train_cfg.ema_end}")
-
-    start_epoch = 0
-
+    # training optimization
     if bfloat16:
         model = jax.tree.map(to_bf16, model)
         ema_encoder = jax.tree.map(to_bf16, ema_encoder)
 
-    # Init logging
+    if model_sharding is not None:
+        model, ema_encoder, opt_state = eqx.filter_shard(
+            (model, ema_encoder, opt_state), model_sharding
+        )
+    
+    # init logging
     if use_wandb:
-        import wandb
-
         wandb.init(
             entity=wandb_entity,
             project=wandb_project,
             name=run_name,
             config=asdict(cfg),
-        )
-
-    if model_sharding is not None:
-        model, ema_encoder, opt_state = eqx.filter_shard(
-            (model, ema_encoder, opt_state), model_sharding
         )
 
     @eqx.filter_jit
@@ -469,8 +468,6 @@ def train_ijepa(
             if step % 100 == 0:
                 logf.flush()
                 if use_wandb:
-                    import wandb
-
                     wandb.log(
                         {
                             "loss": loss.item(),
@@ -537,8 +534,6 @@ def train_ijepa(
             f"avg loss {avg_loss:.4f} ({epoch_time:.1f}s)"
         )
         if use_wandb:
-            import wandb
-
             wandb.log(
                 {"epoch/avg_loss": avg_loss, "epoch/time_s": epoch_time},
                 step=step,
