@@ -3,8 +3,23 @@
 
 jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/patrick-kidger/equinox) implementation of Joint-Embedding Predictive Architecture (JEPA) models and related self-supervised learning methods.
 
-```
+```bash
 python3 -m pip install --upgrade jax[cuda12] jaxlib equinox einops flax optax pytest torch torchvision wandb numpy matplotlib tqdm aim huggingface_hub datasets grain dacite yaml
+```
+
+```bash
+python -m jepax.train.train_ijepa \
+    --config configs/ijepa_test.yaml \
+    --data_dir ~/.data \
+    --save_dir .checkpoints \
+    --save_interval 1 \
+    --exp_name jepa-test \
+    --use_wandb \
+    --wandb_project ijepa \
+    --profile \
+    --profile_start_step 5 \
+    --profile_end_step 10 \
+    --profile_log_dir .logs
 ```
 
 

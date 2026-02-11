@@ -7,6 +7,7 @@ from dataclasses import asdict
 import dacite
 from functools import partial
 from pathlib import Path
+import yaml
 
 import equinox as eqx
 import jax
@@ -14,6 +15,8 @@ import jax.sharding as jshard
 import optax
 from jax import numpy as jnp
 from tqdm import tqdm
+import wandb
+
 
 from jepax.config import Config, load_config
 from jepax.data import build_dataloader
@@ -47,18 +50,18 @@ def parse_args():
     return p.parse_args()
 
 
-def save_checkpoint(model, ema_encoder, opt_state, epoch, hparams, path):
+def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: Config, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_ema_enc.eqx", ema_encoder)
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
 
-    with open(path + "_meta.json", "w") as f:
-        json.dump({"epoch": epoch, "config": hparams}, f, indent=2)
+    with open(path + "_meta.yaml", "w") as f:
+        yaml.dump({"epoch": epoch, "config": asdict(cfg)}, f, default_flow_style=False)
 
 def load_checkpoint(path, img_size, steps_per_epoch):
-    import json
-    with open(path + "_meta.json", "r") as f:
-        checkpoint = json.load(f)
+
+    with open(path + "_meta.yaml", "r") as f:
+        checkpoint = yaml.safe_load(f)
 
     cfg = dacite.from_dict(Config, checkpoint["config"], config=dacite.Config(cast=[tuple]))
 
@@ -95,7 +98,7 @@ def load_checkpoint(path, img_size, steps_per_epoch):
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
 
-    return model, ema_encoder, optimizer, opt_state, checkpoint["epoch"], lr_schedule, wd_schedule, cfg
+    return model, ema_encoder, optimizer, opt_state, checkpoint["epoch"], lr_schedule, wd_schedule, cfg, embed_dim, 
 
 
 def to_bf16(x):
@@ -191,6 +194,30 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
 
     return loss
 
+def get_grad_norms(grads):
+
+    # track gradient statistics
+    grad_stats = {}
+    enc_blocks = grads.encoder.transformer.blocks
+
+    for i, block in enumerate(enc_blocks):
+        block_grads = jax.tree.leaves(eqx.filter(block, eqx.is_array))
+        if block_grads:
+            grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in block_grads))
+            grad_stats[f"enc_block_{i}"] = grad_norm
+
+    pred_blocks = grads.predictor.transformer.blocks
+    for i, block in enumerate(pred_blocks):
+        block_grads = jax.tree.leaves(eqx.filter(block, eqx.is_array))
+        if block_grads:
+            grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in block_grads))
+            grad_stats[f"pred_block_{i}"] = grad_norm
+    
+    grad_stats["all_grads"] = jnp.sqrt(
+        sum((jnp.sum(v**2) for v in list(grad_stats.values())))
+    )
+
+    return grad_stats
 
 def train_ijepa(
     cfg: Config,
@@ -246,17 +273,16 @@ def train_ijepa(
         run_name = f"{run_name}-{tag}"
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "w")
-    logf.write("epoch,itr,loss,mask-A,mask-B,time (ms)\n")
+    logf.write("epoch,step,loss,ctx_patches,pred_patches,ctx_pct,pred_pct,step_ms\n")
 
     dataloader, num_classes, steps_per_epoch, img_size = build_dataloader(
         data_cfg.dataset,
-        data_cfg.data_dir,
+        data_dir,
         batch_size=data_cfg.batch_size,
         num_workers=data_cfg.num_workers,
         prefetch_factor=data_cfg.prefetch_factor,
         shuffle=False,
         is_train=True,
-        sharding=(num_devices > 1 and shard),
         seed=train_cfg.seed,
     )
 
@@ -264,7 +290,7 @@ def train_ijepa(
     if eval_cfg.interval > 0:
         val_loader, _, _, _ = build_dataloader(
             data_cfg.dataset,
-            data_cfg.data_dir,
+            data_dir,
             batch_size=data_cfg.batch_size,
             num_workers=data_cfg.num_workers,
             prefetch_factor=data_cfg.prefetch_factor,
@@ -320,10 +346,13 @@ def train_ijepa(
     print(f"Target normalization: {normalize_tgt}")
 
     # EMA schedule
-    ema_start = train_cfg.ema_start
-    ema_end = train_cfg.ema_end
-    total_steps = train_cfg.epochs * steps_per_epoch
-    print(f"EMA schedule: {ema_start} -> {ema_end}")
+    ema_scheduler = optax.linear_schedule(
+        init_value=train_cfg.ema_start,
+        end_value=train_cfg.ema_end,
+        transition_steps=train_cfg.epochs * steps_per_epoch
+    )
+
+    print(f"EMA schedule: {train_cfg.ema_start} -> {train_cfg.ema_end}")
 
     start_epoch = 0
 
@@ -339,7 +368,7 @@ def train_ijepa(
             entity=wandb_entity,
             project=wandb_project,
             name=run_name,
-            config=hparams,
+            config=asdict(cfg),
         )
 
     if model_sharding is not None:
@@ -350,11 +379,12 @@ def train_ijepa(
     @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, key):
         loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, key)
+        grad_norms = get_grad_norms(grads)
         updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         if model_sharding is not None:
-            return eqx.filter_shard((model, opt_state, loss), model_sharding)
-        return model, opt_state, loss
+            return *eqx.filter_shard((model, opt_state, loss), model_sharding), grad_norms
+        return model, opt_state, loss, grad_norms
 
     @partial(jax.jit, static_argnums=(1, 2, 3))
     def generate_masks(key, masker, num_pred_masks, batch_size):
@@ -410,19 +440,20 @@ def train_ijepa(
                 print(f"z_ema: {z_ema.shape}, dtype: {z_ema.dtype}")
 
             step_time = time.time()
-            model, opt_state, loss = step_model(
+            model, opt_state, loss, grad_norms = step_model(
                 model, opt_state, x, z_ema, mask_ctx, mask_pred, step_key
             )
-            ema_decay = ema_start + (ema_end - ema_start) * (step / total_steps)
-            ema_encoder = update_ema(ema_encoder, model.encoder, ema_decay)
+            ema_encoder = update_ema(ema_encoder, model.encoder, ema_scheduler(step))
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
             step_time = time.time() - step_time
 
-            # Mask counts for logging
-            mask_a = int(jnp.sum(mask_ctx[0]))
-            mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))
+            # mask stats
+            mask_ctx_pct = float(jnp.mean(mask_ctx)) * 100
+            mask_pred_pct = float(jnp.mean(mask_pred)) * 100
+            mask_ctx_avg = float(jnp.mean(jnp.sum(mask_ctx, axis=-1)))
+            mask_pred_avg = float(jnp.mean(jnp.sum(mask_pred.any(axis=-2), axis=-1)))
 
-            # Profile end
+            # profiler end
             if profile and step == profile_end_step:
                 jax.block_until_ready(loss)
                 jax.profiler.stop_trace()
@@ -431,9 +462,9 @@ def train_ijepa(
 
             step += 1
             epoch_losses.append(loss)
-
             step_ms = int(step_time * 1000)
-            logf.write(f"{epoch + 1},{step},{loss:.5f},{mask_a},{mask_b},{step_ms}\n")
+
+            logf.write(f"{epoch + 1},{step},{loss:.5f},{mask_ctx_avg:.1f},{mask_pred_avg:.1f},{mask_ctx_pct:.1f},{mask_pred_pct:.1f},{step_ms}\n")
 
             if step % 100 == 0:
                 logf.flush()
@@ -443,27 +474,28 @@ def train_ijepa(
                     wandb.log(
                         {
                             "loss": loss.item(),
-                            "epoch": epoch,
-                            "lr": float(lr_schedule(step)),
-                            "wd": float(wd_schedule(step)),
-                            "ema_decay": ema_decay,
-                            "mask_a": mask_a,
-                            "mask_b": mask_b,
+                            "schedule/epoch": epoch,
+                            "schedule/lr": float(lr_schedule(step)),
+                            "schedule/wd": float(wd_schedule(step)),
+                            "schedule/ema_enc": float(ema_scheduler(step)),
+                            "mask/ctx_patches": mask_ctx_avg,
+                            "mask/pred_patches": mask_pred_avg,
+                            "mask/ctx_pct": mask_ctx_pct,
+                            "mask/pred_pct": mask_pred_pct,
+                            **{f"grad/{k}": float(v) for k, v in grad_norms.items()},
                         },
                         step=step,
                     )
 
-            pbar.set_postfix(
-                OrderedDict(
-                    [
-                        ("loss", f"{loss:.4f}"),
-                        ("A", mask_a),
-                        ("B", mask_b),
-                        ("ms", step_ms),
-                    ]
-                )
-            )
-            load_time = time.time()
+            pbar.set_postfix(OrderedDict([
+                ("loss", f"{loss:.3f}"),
+                ("ctx", f"{mask_ctx_avg:.0f}/{mask_ctx_pct:.0f}%"),
+                ("pred", f"{mask_pred_avg:.0f}/{mask_pred_pct:.0f}%"),
+                ("load_ms", int(load_time * 1000)),
+                ("step_ms", int(step_time * 1000)),
+                ("tgt_ms", int(target_time * 1000)),
+                ("mask_ms", int(mask_time * 1000)),
+            ]))
 
         # End of epoch - linear probe eval
         run_probe = eval_cfg.interval > 0 and (
@@ -490,8 +522,6 @@ def train_ijepa(
                 f"top5 {best_top5 * 100:.2f}% ({probe_time:.1f}s)"
             )
             if use_wandb:
-                import wandb
-
                 wandb.log(
                     {
                         "probe/time_s": probe_time,
@@ -518,9 +548,11 @@ def train_ijepa(
         if (epoch + 1) % save_interval == 0:
             ckpt_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch + 1}")
             save_checkpoint(
-                model, ema_encoder, opt_state, epoch + 1, hparams, ckpt_path
+                model, ema_encoder, opt_state, epoch + 1, cfg, ckpt_path
             )
             print(f"Saved checkpoint to {ckpt_path}")
+
+        load_time = time.time()
 
     logf.close()
 
@@ -528,6 +560,4 @@ def train_ijepa(
 if __name__ == "__main__":
     args = parse_args()
     cfg = load_config(args.config)
-    if args.data_dir:
-        cfg.data.data_dir = args.data_dir
     train_ijepa(cfg=cfg, **vars(args))

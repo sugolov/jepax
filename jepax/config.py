@@ -6,7 +6,6 @@ import dacite
 @dataclass
 class DataConfig:
     dataset: str = "imagenet"
-    data_dir: str = ""
     batch_size: int = 2048
     num_workers: int = 16
     prefetch_factor: int = 4
