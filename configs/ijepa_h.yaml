@@ -5,14 +5,14 @@ data:
   num_workers: 16
   prefetch_factor: 4
 model:
-  name: ijepa-b
+  name: ijepa-h
   patch_size: 14
   seq_len: 256
   num_channels: 3
   p_drop: 0.0
 train:
   epochs: 300
-  lr: 1.0e-3
+  lr: 7.5e-4
   start_lr: 2.0e-4
   final_lr: 1.0e-6
   warmup_epochs: 15
@@ -29,13 +29,13 @@ mask:
   ctx_scale: [0.85, 1.0]
   ctx_aspect: 1.0
 eval:
-  bn_mode: ema # ema or batch
+  mode: last
   interval: 30
   epochs: 50
   batch_size: 16384
-  train_samples: null # null = use all
-  val_samples: null # null = use all
+  train_samples: null
+  val_samples: null
   n_concat: 4
   optim: lars
-  lr: 0.05
+  lr: 0.1
   wd: 0.0
