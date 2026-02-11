@@ -323,7 +323,7 @@ def train_ijepa(
         run_name = f"{run_name}-{tag}"
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "w")
-    logf.write("epoch,step,loss,ctx_patches,pred_patches,ctx_pct,pred_pct,step_ms\n")
+    logf.write("epoch,step,loss,mask-A,mask-B,step_ms\n")
 
     # data loader creation
     dataloader, num_classes, steps_per_epoch, img_size = build_dataloader(
