@@ -15,9 +15,7 @@ import jax.sharding as jshard
 import optax
 from jax import numpy as jnp
 from tqdm import tqdm
-
 import wandb
-
 
 from jepax.config import Config, load_config
 from jepax.data import build_dataloader
@@ -492,7 +490,7 @@ def train_ijepa(
                 ("mask_ms", int(mask_time * 1000)),
             ]))
 
-        # End of epoch - linear probe eval
+        # probe eval
         run_probe = eval_cfg.interval > 0 and (
             epoch == 0 or (epoch + 1) % eval_cfg.interval == 0
         )
