@@ -12,7 +12,7 @@ model:
   p_drop: 0.0
 train:
   epochs: 300
-  lr: 7.5e-4
+  lr: 1.0e-3
   start_lr: 2.0e-4
   final_lr: 1.0e-6
   warmup_epochs: 15
