@@ -29,7 +29,7 @@ mask:
   ctx_scale: [0.85, 1.0]
   ctx_aspect: 1.0
 eval:
-  mode: last
+  bn_mode: ema
   interval: 30
   epochs: 50
   batch_size: 16384

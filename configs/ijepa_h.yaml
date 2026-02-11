@@ -15,7 +15,7 @@ train:
   lr: 1.0e-3
   start_lr: 2.0e-4
   final_lr: 1.0e-6
-  warmup_epochs: 15
+  warmup_epochs: 40
   wd: 0.04
   final_wd: 0.4
   ema_start: 0.996
@@ -29,7 +29,7 @@ mask:
   ctx_scale: [0.85, 1.0]
   ctx_aspect: 1.0
 eval:
-  mode: last
+  bn_mode: ema
   interval: 30
   epochs: 50
   batch_size: 16384
