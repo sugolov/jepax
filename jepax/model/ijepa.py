@@ -221,16 +221,13 @@ class IJEPAEncoder(eqx.Module):
         x = self.embed(x)  # [N_patches, D]
         n_patches = x.shape[0]
 
+        x = self.pe(x)
+
         if mask is not None:
             mask_flat = mask.reshape(-1)
             indices, n_keep = mask_to_indices(mask_flat, n_patches)
 
-            # Gather visible patches
             x_gathered = x[indices]
-
-            pos_emb = self.pe._get_pe_from_grid(self.pe.grid)
-            pos_gathered = pos_emb[indices]
-            x_gathered = x_gathered + pos_gathered
 
             # Zero out padding positions
             valid_mask = jnp.arange(n_patches) < n_keep
@@ -239,7 +236,7 @@ class IJEPAEncoder(eqx.Module):
             # Attention mask: only attend to first n_keep positions
             attn_mask = valid_mask[:, None] & valid_mask[None, :]
         else:
-            x_gathered = self.pe(x)
+            x_gathered = x
             attn_mask = None
             n_keep = n_patches
             indices = jnp.arange(n_patches)

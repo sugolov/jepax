@@ -10,8 +10,7 @@ from jaxtyping import Array, Float, Key
 class PositionalEncoding(eqx.Module):
     """Sinusoidal positional encoding."""
 
-    # todo: fix
-    pe: Array = eqx.field(static=True)
+    pe: Array
     dim: int = eqx.field(static=True)
 
     def __init__(self, dim: int, seq_len: int = 5000):
@@ -23,27 +22,27 @@ class PositionalEncoding(eqx.Module):
         )
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = np.array(pe)
+        self.pe = jnp.array(pe)
 
     def pe_from_idx(self, idx: Array) -> Float[Array, "S D"]:
         return jax.lax.stop_gradient(jnp.take(self.pe, idx, axis=0))
 
     def __call__(self, x: Float[Array, "S D"]) -> Float[Array, "S D"]:
         seq_len = x.shape[0]
-        return x + self.pe[:seq_len].astype(x.dtype)
+        return x + jax.lax.stop_gradient(self.pe[:seq_len].astype(x.dtype))
 
 
 class PositionalEncoding2D(PositionalEncoding):
     """2D sinusoidal positional encoding for vision transformers."""
 
-    grid: Array = eqx.field(static=True)
+    grid: Array
     dim: int = eqx.field(static=True)
 
     def __init__(self, grid_size: int, dim: int, seq_len: int = 5000):
         super().__init__(dim // 2, seq_len=seq_len)
 
         self.dim = dim
-        self.grid = self._get_pe_grid(grid_size)
+        self.grid = jnp.array(self._get_pe_grid(grid_size))
 
     def _get_pe_grid(self, grid_size: int) -> Array:
         grid_h = np.arange(grid_size, dtype=int)
