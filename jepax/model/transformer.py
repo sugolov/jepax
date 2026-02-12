@@ -118,8 +118,10 @@ class Attention(eqx.Module):
         S, D = x.shape
 
         qkv = jax.vmap(self.qkv_proj)(x)  # (S, 3D)
-        qkv = qkv.reshape(S, self.num_head, -1)  # (S, N, 3*Dh)
-        q, k, v = jnp.split(qkv, 3, axis=-1)  # each (S, N, Dh) = (T, N, H)
+        q, k, v = jnp.split(qkv, 3, axis=-1)  # each (S, D)
+        q = q.reshape(S, self.num_head, -1)  # (S, N, Dh)
+        k = k.reshape(S, self.num_head, -1)  # (S, N, Dh)
+        v = v.reshape(S, self.num_head, -1)  # (S, N, Dh)
 
         impl = self.implementation
         if mask is not None and impl == "cudnn":
