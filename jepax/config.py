@@ -1,6 +1,7 @@
-from dataclasses import dataclass, field, asdict
-import yaml
+from dataclasses import asdict, dataclass, field
+
 import dacite
+import yaml
 
 
 @dataclass
@@ -46,7 +47,7 @@ class MaskConfig:
 
 @dataclass
 class EvalConfig:
-    mode: str = "last"
+    bn_mode: str = "ema"
     interval: int = 30
     epochs: int = 50
     batch_size: int = 16384

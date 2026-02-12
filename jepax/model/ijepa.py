@@ -89,6 +89,7 @@ def get_ijepa_config(name: str):
         )
     return ijepa_configs[name]
 
+
 def fix_init_weight(model):
     def rescale_block(block, layer_id):
         scale = jnp.sqrt(2.0 * (layer_id + 1))
@@ -103,15 +104,19 @@ def fix_init_weight(model):
             block.ff.linear2.weight / scale,
         )
         return block
+
     # Rescale encoder blocks
-    new_blocks = [rescale_block(b, i) for i, b in enumerate(model.encoder.transformer.blocks)]
+    enc_blocks = model.encoder.transformer.blocks
+    new_blocks = [rescale_block(b, i) for i, b in enumerate(enc_blocks)]
     model = eqx.tree_at(lambda m: m.encoder.transformer.blocks, model, new_blocks)
     # Rescale predictor blocks
-    new_pred_blocks = [
-        rescale_block(b, i) for i, b in enumerate(model.predictor.transformer.blocks)
-    ]
-    model = eqx.tree_at(lambda m: m.predictor.transformer.blocks, model, new_pred_blocks)
+    pred_blocks = model.predictor.transformer.blocks
+    new_pred_blocks = [rescale_block(b, i) for i, b in enumerate(pred_blocks)]
+    model = eqx.tree_at(
+        lambda m: m.predictor.transformer.blocks, model, new_pred_blocks
+    )
     return model
+
 
 def get_ijepa_model(
     name: str,
