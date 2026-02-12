@@ -1,4 +1,3 @@
-import einops
 import equinox as eqx
 import jax
 from jax import numpy as jnp
@@ -58,12 +57,15 @@ class PatchEmbedding(eqx.Module):
         )
 
     def __call__(self, x: Float[Array, "C H W"]) -> Float[Array, "N D"]:
-        x = einops.rearrange(
-            x,
-            "c (h ph) (w pw) -> (h w) (c ph pw)",
-            ph=self.patch_size,
-            pw=self.patch_size,
-        )
+        c, h, w = x.shape
+        gh = h // self.patch_size
+        gw = w // self.patch_size
+
+        x = x.reshape(c, gh, self.patch_size, w)
+        x = x.reshape(c, gh, self.patch_size, gw, self.patch_size)
+        # (C, gh, ph, gw, pw) -> (gh, gw, C, ph, pw) -> (gh*gw, C*ph*pw)
+        x = x.transpose(1, 3, 0, 2, 4)
+        x = x.reshape(gh * gw, c * self.patch_size * self.patch_size)
         x = jax.vmap(self.linear)(x)
         return x
 
