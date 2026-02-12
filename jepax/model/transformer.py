@@ -258,9 +258,9 @@ class Transformer(eqx.Module):
 
         for block, k in zip(self.blocks, keys):
             if self.gradient_checkpointing:
-                x = eqx.filter_checkpoint(block)(
-                    x, key=k, train=train, attn_mask=attn_mask
-                )
+                x = eqx.filter_checkpoint(
+                    block, policy=jax.checkpoint_policies.nothing_saveable
+                )(x, key=k, train=train, attn_mask=attn_mask)
             else:
                 x = block(x, key=k, train=train, attn_mask=attn_mask)
 
