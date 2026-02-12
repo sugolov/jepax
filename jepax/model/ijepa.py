@@ -380,7 +380,10 @@ class IJEPA(eqx.Module):
             mask_ctx: context mask [N_patches], True = context (flat)
             mask_pred: target masks [M, N_patches], True = target position (flattened)
         """
-        k1, k2 = jax.random.split(key, 2)
+        if key is not None:
+            k1, k2 = jax.random.split(key, 2)
+        else:
+            k1 = k2 = None
 
         # Encoder mask: context minus targets
         mask_tgt = jnp.any(mask_pred, axis=0)  # [N_patches]
