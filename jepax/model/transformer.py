@@ -93,14 +93,22 @@ class Attention(eqx.Module):
     num_head: int
     dim: int
     causal: bool
+    implementation: str = eqx.field(static=True)
 
     def __init__(
-        self, dim: int, num_head: int, causal: bool = False, *, key: Key[Array, ""]
+        self,
+        dim: int,
+        num_head: int,
+        causal: bool = False,
+        implementation: str = "cudnn",
+        *,
+        key: Key[Array, ""],
     ):
         k1, k2 = jax.random.split(key)
         self.dim = dim
         self.num_head = num_head
         self.causal = causal
+        self.implementation = implementation
         self.qkv_proj = eqx.nn.Linear(dim, 3 * dim, key=k1)
         self.out_proj = eqx.nn.Linear(dim, dim, key=k2)
 
@@ -113,10 +121,11 @@ class Attention(eqx.Module):
         qkv = qkv.reshape(S, self.num_head, -1)  # (S, N, 3*Dh)
         q, k, v = jnp.split(qkv, 3, axis=-1)  # each (S, N, Dh) = (T, N, H)
 
-        if mask is not None:
-            mask = mask[None, :, :]  # (1, T, S)
+        if mask is not None and self.implementation == "cudnn":
+            mask = jnp.broadcast_to(mask[None, :, :], (self.num_head, S, S))
         vals = jax.nn.dot_product_attention(
-            q, k, v, mask=mask, is_causal=self.causal, implementation="cudnn"
+            q, k, v, mask=mask, is_causal=self.causal,
+            implementation=self.implementation,
         )  # (S, N, Dh)
         vals = vals.reshape(S, -1)  # (S, D)
 
@@ -139,11 +148,15 @@ class TransformerBlock(eqx.Module):
         causal: bool = False,
         mlp_ratio: float = 4.0,
         p_drop: float = 0.1,
+        attn_implementation: str = "cudnn",
         *,
         key: Key[Array, ""],
     ):
         k1, k2 = jax.random.split(key)
-        self.attn = Attention(dim=dim, num_head=num_head, causal=causal, key=k1)
+        self.attn = Attention(
+            dim=dim, num_head=num_head, causal=causal,
+            implementation=attn_implementation, key=k1,
+        )
         self.ff = FeedForward(dim=dim, mlp_ratio=mlp_ratio, key=k2)
         self.ln1 = eqx.nn.LayerNorm(dim)
         self.ln2 = eqx.nn.LayerNorm(dim)
@@ -188,6 +201,7 @@ class Transformer(eqx.Module):
         pe_type: str = "1d",
         grid_size: Optional[int] = None,
         gradient_checkpointing: bool = False,
+        attn_implementation: str = "cudnn",
         *,
         key: Key[Array, ""],
     ):
@@ -199,6 +213,7 @@ class Transformer(eqx.Module):
                 causal=causal,
                 mlp_ratio=mlp_ratio,
                 p_drop=p_drop,
+                attn_implementation=attn_implementation,
                 key=k,
             )
             for k in keys
