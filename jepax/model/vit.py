@@ -63,8 +63,9 @@ class PatchEmbedding(eqx.Module):
 
         x = x.reshape(c, gh, self.patch_size, w)
         x = x.reshape(c, gh, self.patch_size, gw, self.patch_size)
-        # (C, gh, ph, gw, pw) -> (gh, gw, C, ph, pw) -> (gh*gw, C*ph*pw)
+        # (C, gh, ph, gw, pw) -> (gh, gw, C, ph, pw)
         x = x.transpose(1, 3, 0, 2, 4)
+        x = x.reshape(gh * gw, c, self.patch_size, self.patch_size)
         x = x.reshape(gh * gw, c * self.patch_size * self.patch_size)
         x = jax.vmap(self.linear)(x)
         return x
