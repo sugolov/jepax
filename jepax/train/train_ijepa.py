@@ -500,6 +500,9 @@ def train_ijepa(
             )
             mask_time = time.time() - mask_time
 
+            mask_a = int(jnp.sum(mask_ctx[0]))
+            mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))
+
             x = batch["image"]
             if bfloat16:
                 x = x.astype(jnp.bfloat16)
@@ -527,10 +530,6 @@ def train_ijepa(
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_scheduler(step))
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
             step_time = time.time() - step_time
-
-            # mask stats
-            mask_a = int(jnp.sum(mask_ctx[0]))  # context patches
-            mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))  # target patches
 
             # profiler end
             if profile and step == profile_end_step:
