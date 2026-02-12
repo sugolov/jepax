@@ -157,6 +157,26 @@ def get_ijepa_model(
     return model, enc_config["dim"]
 
 
+def _sincos_embed(positions, dim):
+    """Compute sinusoidal embedding from integer positions [N] -> [N, dim]."""
+    div_term = jnp.exp(
+        jnp.arange(0, dim, 2, dtype=jnp.float32) * (-jnp.log(10000.0) / dim)
+    )
+    angles = positions[:, None].astype(jnp.float32) * div_term[None, :]
+    pe = jnp.stack([jnp.sin(angles), jnp.cos(angles)], axis=-1)
+    return pe.reshape(positions.shape[0], dim)
+
+
+def compute_2d_pe(flat_indices, grid_size, dim):
+    """Compute 2D sinusoidal PE from flat patch indices."""
+    half = dim // 2
+    cols = flat_indices % grid_size
+    rows = flat_indices // grid_size
+    return jax.lax.stop_gradient(
+        jnp.concatenate([_sincos_embed(cols, half), _sincos_embed(rows, half)], axis=-1)
+    )
+
+
 def mask_to_indices(mask: Array, max_len: int) -> tuple[Array, int]:
     """Convert boolean mask to padded indices array.
 
@@ -265,6 +285,7 @@ class IJEPAPredictor(eqx.Module):
     norm: eqx.nn.LayerNorm
     dim: int = eqx.field(static=True)
     latent_dim: int = eqx.field(static=True)
+    grid_size: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -300,6 +321,7 @@ class IJEPAPredictor(eqx.Module):
         self.norm = eqx.nn.LayerNorm(latent_dim)
         self.dim = dim
         self.latent_dim = latent_dim
+        self.grid_size = grid_size
 
     def __call__(
         self,
@@ -324,14 +346,11 @@ class IJEPAPredictor(eqx.Module):
         # Project context to predictor dimension
         ctx_proj = jax.vmap(self.in_proj)(ctx_emb)  # [seq_len, latent_dim]
 
-        pos_emb_full = self.pe._get_pe_from_grid(
-            self.pe.grid
-        )  # [N_patches, latent_dim]
-        ctx_pos = pos_emb_full[ctx_indices]  # [seq_len, latent_dim]
+        ctx_pos = compute_2d_pe(ctx_indices, self.grid_size, self.latent_dim)
         ctx_proj = ctx_proj + ctx_pos
 
         # Create pred_tokens with target positional embeddings
-        tgt_pos = pos_emb_full[tgt_indices]
+        tgt_pos = compute_2d_pe(tgt_indices, self.grid_size, self.latent_dim)
         pred_tokens = self.pred_token + tgt_pos
 
         total_valid = n_ctx + n_tgt
