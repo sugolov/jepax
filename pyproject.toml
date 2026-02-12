@@ -28,7 +28,6 @@ dependencies = [
     "dacite>=2.2.0",
     "einops>=0.8.1",
     "equinox>=0.13.2",
-    "flax>=0.10.0",
     "grain>=0.2.0",
     "jax>=0.6.0",
     "numpy>=1.26.0",
