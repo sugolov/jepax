@@ -93,14 +93,14 @@ class Attention(eqx.Module):
     num_head: int
     dim: int
     causal: bool
-    implementation: str = eqx.field(static=True)
+    implementation: Optional[str] = eqx.field(static=True)
 
     def __init__(
         self,
         dim: int,
         num_head: int,
         causal: bool = False,
-        implementation: str = "cudnn",
+        implementation: Optional[str] = None,
         *,
         key: Key[Array, ""],
     ):
@@ -123,11 +123,11 @@ class Attention(eqx.Module):
         k = k.reshape(S, self.num_head, -1)  # (S, N, Dh)
         v = v.reshape(S, self.num_head, -1)  # (S, N, Dh)
 
-        impl = self.implementation
-        if mask is not None and impl == "cudnn":
+        if mask is not None and self.implementation == "cudnn":
             mask = jnp.broadcast_to(mask[None, :, :], (self.num_head, S, S))
         vals = jax.nn.dot_product_attention(
-            q, k, v, mask=mask, is_causal=self.causal, implementation=impl,
+            q, k, v, mask=mask, is_causal=self.causal,
+            **({"implementation": self.implementation} if self.implementation else {}),
         )  # (S, N, Dh)
         vals = vals.reshape(S, -1)  # (S, D)
 
@@ -150,7 +150,7 @@ class TransformerBlock(eqx.Module):
         causal: bool = False,
         mlp_ratio: float = 4.0,
         p_drop: float = 0.1,
-        attn_implementation: str = "cudnn",
+        attn_implementation: Optional[str] = None,
         *,
         key: Key[Array, ""],
     ):
@@ -203,7 +203,7 @@ class Transformer(eqx.Module):
         pe_type: str = "1d",
         grid_size: Optional[int] = None,
         gradient_checkpointing: bool = False,
-        attn_implementation: str = "cudnn",
+        attn_implementation: Optional[str] = None,
         *,
         key: Key[Array, ""],
     ):

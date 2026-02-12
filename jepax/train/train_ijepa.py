@@ -53,9 +53,24 @@ def parse_args():
     return p.parse_args()
 
 
-def init_from_config(cfg: Config, img_size: int, steps_per_epoch: int, key):
+def init_from_config(
+    cfg: Config, img_size: int, steps_per_epoch: int, key, *, shard: bool = False
+):
     model_cfg, train_cfg, mask_cfg = cfg.model, cfg.train, cfg.mask
     total_steps = train_cfg.epochs * steps_per_epoch
+
+    attn_impl = model_cfg.attn_implementation
+    if attn_impl is not None and attn_impl not in {"cudnn", "xla"}:
+        raise ValueError(
+            f"Unsupported model.attn_implementation={attn_impl!r}. "
+            "Choose 'cudnn', 'xla', or null."
+        )
+    if shard and attn_impl == "cudnn":
+        print(
+            "Warning: --shard with cudnn attention can fail during jit+grad with "
+            "XLA stride errors. Falling back to model.attn_implementation=null."
+        )
+        attn_impl = None
 
     masker = IJEPAMasker(
         height=img_size,
@@ -77,6 +92,7 @@ def init_from_config(cfg: Config, img_size: int, steps_per_epoch: int, key):
         p_drop=model_cfg.p_drop,
         seq_len=model_cfg.seq_len,
         gradient_checkpointing=train_cfg.gradient_checkpointing,
+        attn_implementation=attn_impl,
     )
     ema_encoder = jax.tree.map(lambda x: x, model.encoder)
 
@@ -135,7 +151,7 @@ def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: Config, path):
         yaml.dump({"epoch": epoch, "config": asdict(cfg)}, f, default_flow_style=False)
 
 
-def load_checkpoint(path, img_size, steps_per_epoch, key):
+def load_checkpoint(path, img_size, steps_per_epoch, key, *, shard: bool = False):
     with open(path + "_meta.yaml", "r") as f:
         meta = yaml.safe_load(f)
 
@@ -153,7 +169,7 @@ def load_checkpoint(path, img_size, steps_per_epoch, key):
         embed_dim,
         normalize_tgt,
         key,
-    ) = init_from_config(cfg, img_size, steps_per_epoch, key)
+    ) = init_from_config(cfg, img_size, steps_per_epoch, key, shard=shard)
 
     model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
     ema_encoder = eqx.tree_deserialise_leaves(path + "_ema_enc.eqx", ema_encoder)
@@ -409,7 +425,7 @@ def train_ijepa(
             embed_dim,
             normalize_tgt,
             key,
-        ) = init_from_config(cfg, img_size, steps_per_epoch, key)
+        ) = init_from_config(cfg, img_size, steps_per_epoch, key, shard=shard)
     else:
         (
             start_epoch,
@@ -427,7 +443,7 @@ def train_ijepa(
                 normalize_tgt,
                 key,
             ),
-        ) = load_checkpoint(resume, img_size, steps_per_epoch, key)
+        ) = load_checkpoint(resume, img_size, steps_per_epoch, key, shard=shard)
 
         # refresh
         data_cfg = cfg.data

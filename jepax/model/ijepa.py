@@ -3,6 +3,8 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Key
 
+from typing import Optional
+
 from jepax.model.transformer import (
     PositionalEncoding2D,
     Transformer,
@@ -128,6 +130,7 @@ def get_ijepa_model(
     p_drop: float = 0.1,
     seq_len: int = 256,
     gradient_checkpointing: bool = False,
+    attn_implementation: Optional[str] = None,
 ):
     enc_name, pred_name = get_ijepa_config(name)
 
@@ -152,10 +155,16 @@ def get_ijepa_model(
     )
 
     encoder = IJEPAEncoder(
-        **enc_config, gradient_checkpointing=gradient_checkpointing, key=k1
+        **enc_config,
+        gradient_checkpointing=gradient_checkpointing,
+        attn_implementation=attn_implementation,
+        key=k1,
     )
     predictor = IJEPAPredictor(
-        **pred_config, gradient_checkpointing=gradient_checkpointing, key=k2
+        **pred_config,
+        gradient_checkpointing=gradient_checkpointing,
+        attn_implementation=attn_implementation,
+        key=k2,
     )
     model = IJEPA(encoder=encoder, predictor=predictor)
     model = fix_init_weight(model)
@@ -218,6 +227,7 @@ class IJEPAEncoder(eqx.Module):
         p_drop: float = 0.1,
         seq_len: int = 2048,
         gradient_checkpointing: bool = False,
+        attn_implementation: Optional[str] = None,
         *,
         key: Key[Array, ""],
     ):
@@ -235,6 +245,7 @@ class IJEPAEncoder(eqx.Module):
             key=k2,
             causal=False,
             gradient_checkpointing=gradient_checkpointing,
+            attn_implementation=attn_implementation,
         )
         self.pe = PositionalEncoding2D(dim=dim, seq_len=seq_len, grid_size=grid_size)
         self.dim = dim
@@ -306,6 +317,7 @@ class IJEPAPredictor(eqx.Module):
         p_drop: float = 0.1,
         seq_len: int = 2048,
         gradient_checkpointing: bool = False,
+        attn_implementation: Optional[str] = None,
         *,
         key: Key[Array, ""],
     ):
@@ -322,6 +334,7 @@ class IJEPAPredictor(eqx.Module):
             key=k2,
             causal=False,
             gradient_checkpointing=gradient_checkpointing,
+            attn_implementation=attn_implementation,
         )
         self.pred_token = jax.random.normal(k3, (1, latent_dim)) * 0.02
         self.out_proj = eqx.nn.Linear(latent_dim, dim, key=k4)

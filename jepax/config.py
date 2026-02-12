@@ -19,6 +19,7 @@ class ModelConfig:
     seq_len: int = 256
     num_channels: int = 3
     p_drop: float = 0.0
+    attn_implementation: str | None = None
 
 
 @dataclass
