@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Optional
 
 import equinox as eqx
@@ -109,43 +110,17 @@ class Attention(eqx.Module):
         S, D = x.shape
 
         qkv = jax.vmap(self.qkv_proj)(x)  # (S, 3D)
-        qkv = qkv.reshape(S, self.num_head, -1)  # (S, H, 3D/H)
-        qkv = qkv.transpose(1, 0, 2)  # (H, S, 3D/H)
-        q, k, v = jnp.split(qkv, 3, axis=-1)  # (H, S, D/H)
+        qkv = qkv.reshape(S, self.num_head, -1)  # (S, N, 3*Dh)
+        q, k, v = jnp.split(qkv, 3, axis=-1)  # each (S, N, Dh) = (T, N, H)
 
-        mask_causal = jnp.tri(S, S, dtype=bool).T if self.causal else None
-
-        if mask is None:
-            mask = mask_causal
-        elif self.causal:
-            mask = mask.astype(bool) | mask_causal
-
-        vals = self._attention(q, k, v, mask=mask)  # (H, S, D/H)
-        vals = vals.transpose(1, 0, 2)  # (S, H, D/H)
+        vals = jax.nn.dot_product_attention(
+            q, k, v, mask=mask, is_causal=self.causal
+        )  # (S, N, Dh)
         vals = vals.reshape(S, -1)  # (S, D)
 
         out = jax.vmap(self.out_proj)(vals)  # (S, D)
 
         return out
-
-    def _attention(
-        self,
-        q: Float[Array, "H S Dh"],
-        k: Float[Array, "H S Dh"],
-        v: Float[Array, "H S Dh"],
-        mask: Optional[Array] = None,
-    ) -> Float[Array, "H S Dh"]:
-        """Scaled dot-product attention."""
-        d = q.shape[-1]
-        logits = q @ k.transpose(0, 2, 1) / jnp.sqrt(d)  # (H, S, S)
-
-        if mask is not None:
-            logits = jnp.where(mask == 0, -9e15, logits)
-
-        attn = jax.nn.softmax(logits, axis=-1)  # (H, S, S)
-        vals = attn @ v  # (H, S, D/H)
-
-        return vals
 
 
 class TransformerBlock(eqx.Module):
@@ -249,6 +224,9 @@ class Transformer(eqx.Module):
     ) -> Float[Array, "S D"] | tuple[Float[Array, "S D"], list[Float[Array, "S D"]]]:
         x = self.pe(x) if use_pe else x
 
+        if self.gradient_checkpointing and not get_intermediates:
+            return self._forward_scan(x, key, train, attn_mask)
+
         if key is not None:
             keys = jax.random.split(key, len(self.blocks))
         else:
@@ -257,12 +235,7 @@ class Transformer(eqx.Module):
         intermediates = [x] if get_intermediates else None
 
         for block, k in zip(self.blocks, keys):
-            if self.gradient_checkpointing:
-                x = eqx.filter_checkpoint(
-                    block, policy=jax.checkpoint_policies.nothing_saveable
-                )(x, key=k, train=train, attn_mask=attn_mask)
-            else:
-                x = block(x, key=k, train=train, attn_mask=attn_mask)
+            x = block(x, key=k, train=train, attn_mask=attn_mask)
 
             if intermediates is not None:
                 intermediates += [x]
@@ -270,4 +243,29 @@ class Transformer(eqx.Module):
         if intermediates is not None:
             return x, intermediates
 
+        return x
+
+    def _forward_scan(self, x, key, train, attn_mask):
+        n = len(self.blocks)
+
+        dynamics, static_template = [], None
+        for b in self.blocks:
+            dyn, static = eqx.partition(b, eqx.is_array)
+            dynamics.append(dyn)
+            static_template = static
+
+        stacked_dyn = jax.tree.map(lambda *xs: jnp.stack(xs), *dynamics)
+
+        if key is not None:
+            scan_keys = jax.random.split(key, n)
+        else:
+            scan_keys = jnp.zeros((n, 2), dtype=jnp.uint32)
+
+        @partial(jax.checkpoint, policy=jax.checkpoint_policies.nothing_saveable)
+        def body(carry, inputs):
+            block_dyn, k = inputs
+            block = eqx.combine(block_dyn, static_template)
+            return block(carry, key=k, train=train, attn_mask=attn_mask), None
+
+        x, _ = jax.lax.scan(body, x, (stacked_dyn, scan_keys))
         return x

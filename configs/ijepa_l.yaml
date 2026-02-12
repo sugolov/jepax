@@ -22,6 +22,7 @@ train:
   ema_end: 1.0
   seed: 42
   normalize_targets: true
+  gradient_checkpointing: false
 mask:
   n_pred_masks: 4
   pred_scale: [0.15, 0.2]
