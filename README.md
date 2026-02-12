@@ -1,8 +1,14 @@
 <h1 align='center'>jepax</h1>
-<h2 align='center'>JEPA models in JAX.</h2>
+<h2 align='center'>A JAX-based library for JEPA research</h2>
 
-jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/patrick-kidger/equinox) implementation of Joint-Embedding Predictive Architecture (JEPA) models and related self-supervised learning methods.
+jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/patrick-kidger/equinox) implementation of Joint-Embedding Predictive Architecture (JEPA) models and related self-supervised learning methods. The focus is on straightforward implementations that allow for quick experimentation with new regularizers, losses, or further downstream tasks. *We are actively building this library: let's make some PRs!*
 
+### v0: features 
+We focused on 1-to-1 configs, losses, and logging with the original PyTorch implementation. Below is a  reproduction of IJEPA-B with data parallelization on 8xA100.
+
+![IJEPA-B training curves](images/ijepa_b.png)
+
+<p align='center'>Training loss and linear probe accuracy for IJEPA-B trained for 300 epochs on 8xA100.</p>
 
 ## Installation
 
@@ -12,54 +18,35 @@ cd jepax
 pip install -e .
 ```
 
-Requires Python >= 3.10.
-
-### Dependencies
-
-Install `opencv`, required for `ffcv`: https://github.com/libffcv/ffcv-imagenet
-
-**macOS:**
-```bash
-brew install opencv pkg-config
-```
-
-**Linux:**
-```bash
-sudo apt update
-sudo apt install -y libopencv-dev pkg-config libturbojpeg0-dev
-```
-
 ### Dataset
+
+A straightforward way to download Imagenet1k is with HuggingFace. The below script will cache it in a target directory for your dataloader.
 
 ```bash
 export HF_TOKEN=hf_xxxxxxxxxxxxx
-python jepax/data/download_imagenet.py --data_dir ~/your/data/dir
+python -m jepax.data.download_imagenet.py --data_dir ~/your/data/dir
 ```
 
-## TODO
+### Launch IJEPA training
+Launching training for any of the IJEPA-B/L/H model sizes in `configs/`:
 
-- fix bool masks to indices to take less memory with masker
-- smarter cached masking
-- compute whether training is reasonable for wandb run
-- fix lr log
-- make sure eval is correctly sharded and is not OOMing
-- think about sharding predictor to a different gpu
-- initialize vit weights correctly
-- triple check configs with ijepa paper
-- gpu profile
-- compute mfu
-- add imnet22k download option
-- increase wd linearly
-- increase momentum linearly
-- DOUBLE CHECK loss and implementation
-- linear eval on last 4 layers and last layer
+```bash
+python -m jepax.train.train_ijepa \
+    --config configs/ijepa_b.yaml \
+    --data_dir ~/your/data/dir \
+    --save_dir ~/your/save/dir \
+    --save_interval 10 \
+    --exp_name ijepa-b \
+    --use_wandb \
+    --wandb_project ijepa 
+```
 
 ## Future Development
 
 - [ ] Reproduce ImageNet results from IJEPA
 - [ ] [RCDM Visualization](https://arxiv.org/abs/2112.09164)
-- [ ] Multigpu (single node) training (easy)
-- [ ] Multinode training (harder)
+- [ ] Model sharding across GPUs
+- [ ] Benchmarking mixed precision training ([MPX](https://arxiv.org/pdf/2507.03312))
 - [ ] LeJEPA
 - [ ] V-JEPA
 - [ ] Update tests
@@ -67,13 +54,10 @@ python jepax/data/download_imagenet.py --data_dir ~/your/data/dir
 - [ ] Benchmarks against PyTorch implementation
 
 ## Other Resources
-
 - [Awesome JEPA (list of JEPA papers/code)](https://github.com/lockwo/awesome-jepa)
-- [I-JEPA paper](https://arxiv.org/abs/2301.08243)
-- [V-JEPA paper](https://arxiv.org/abs/2402.03406)
-- [Original PyTorch I-JEPA](https://github.com/facebookresearch/ijepa)
-- [Original PyTorch V-JEPA](https://github.com/facebookresearch/jepa)
-- [Yann LeCun's position paper](https://openreview.net/pdf?id=BZ5a1r-kVsf)
+- I-JEPA ([paper](https://arxiv.org/abs/2301.08243)) ([repo](https://github.com/facebookresearch/ijepa))
+- DINOv2 ([paper](https://arxiv.org/abs/2304.07193)) ([repo](https://github.com/facebookresearch/dinov2))
+- V-JEPA ([paper](https://arxiv.org/abs/2402.03406)) ([repo](https://github.com/facebookresearch/jepa))
 
 ## See Also
 
