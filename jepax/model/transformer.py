@@ -35,14 +35,14 @@ class PositionalEncoding(eqx.Module):
 class PositionalEncoding2D(PositionalEncoding):
     """2D sinusoidal positional encoding for vision transformers."""
 
-    grid: Array
+    grid: Array = eqx.field(static=True)
     dim: int = eqx.field(static=True)
 
     def __init__(self, grid_size: int, dim: int, seq_len: int = 5000):
         super().__init__(dim // 2, seq_len=seq_len)
 
         self.dim = dim
-        self.grid = jnp.array(self._get_pe_grid(grid_size))
+        self.grid = self._get_pe_grid(grid_size)
 
     def _get_pe_grid(self, grid_size: int) -> Array:
         grid_h = np.arange(grid_size, dtype=int)
