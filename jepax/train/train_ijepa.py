@@ -226,13 +226,11 @@ def update_ema(ema_encoder, encoder, decay: float):
 
 
 @eqx.filter_jit
-def compute_target_reps(ema_encoder, x_b, key):
-    keys = jax.random.split(key, x_b.shape[0])
+def compute_target_reps(ema_encoder, x_b):
+    def encode(x):
+        return ema_encoder(None, x, mask=None, train=False)[0]
 
-    def encode(k, x):
-        return ema_encoder(k, x, mask=None, train=False)[0]
-
-    z_ema = jax.vmap(encode)(keys, x_b)
+    z_ema = jax.vmap(encode)(x_b)
     return z_ema
 
 
@@ -244,7 +242,7 @@ def normalize_targets(z_ema):
 
 
 @eqx.filter_value_and_grad
-def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
+def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key=None):
     """Compute loss and gradients.
 
     Model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
@@ -253,12 +251,11 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key):
     - n_tgt: number of target patches
     - pred_start, pred_end: slice indices for predictions
     """
-    keys = jax.random.split(key, x_b.shape[0])
     seq_len = z_ema.shape[1]  # N_patches
 
     z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-        lambda k, x, mc, mp: model(k, x, mc, mp, train=True)
-    )(keys, x_b, mask_ctx_b, mask_pred_b)
+        lambda x, mc, mp: model(key, x, mc, mp, train=True)
+    )(x_b, mask_ctx_b, mask_pred_b)
 
     z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
@@ -460,8 +457,8 @@ def train_ijepa(
         )
 
     @eqx.filter_jit
-    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred, key):
-        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred, key)
+    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred)
         grad_norms = get_grad_norms(grads)
         updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
@@ -497,7 +494,7 @@ def train_ijepa(
                 jax.profiler.start_trace(profile_log_dir)
 
             mask_time = time.time()
-            key, mask_key, ema_key, step_key = jax.random.split(key, 4)
+            key, mask_key = jax.random.split(key)
             mask_ctx, mask_pred = generate_masks(
                 mask_key, masker, mask_cfg.n_pred_masks, data_cfg.batch_size
             )
@@ -512,7 +509,7 @@ def train_ijepa(
                 mask_pred = jax.device_put(mask_pred, data_sharding)
 
             target_time = time.time()
-            z_ema = compute_target_reps(ema_encoder, x, ema_key)
+            z_ema = compute_target_reps(ema_encoder, x)
             if normalize_tgt:
                 z_ema = normalize_targets(z_ema)
             target_time = time.time() - target_time
@@ -525,7 +522,7 @@ def train_ijepa(
 
             step_time = time.time()
             model, opt_state, loss, grad_norms = step_model(
-                model, opt_state, x, z_ema, mask_ctx, mask_pred, step_key
+                model, opt_state, x, z_ema, mask_ctx, mask_pred
             )
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_scheduler(step))
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
