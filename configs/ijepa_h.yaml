@@ -1,7 +1,7 @@
 # I-JEPA ImageNet-1K training config
 data:
   dataset: imagenet
-  batch_size: 1024
+  batch_size: 2048
   num_workers: 16
   prefetch_factor: 4
 model:
@@ -22,6 +22,7 @@ train:
   ema_end: 1.0
   seed: 42
   normalize_targets: true
+  gradient_checkpointing: true
 mask:
   n_pred_masks: 4
   pred_scale: [0.15, 0.2]

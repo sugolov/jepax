@@ -76,6 +76,7 @@ def init_from_config(cfg: Config, img_size: int, steps_per_epoch: int, key):
         img_size=img_size,
         p_drop=model_cfg.p_drop,
         seq_len=model_cfg.seq_len,
+        gradient_checkpointing=train_cfg.gradient_checkpointing,
     )
     ema_encoder = jax.tree.map(lambda x: x, model.encoder)
 

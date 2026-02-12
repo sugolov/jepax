@@ -34,6 +34,7 @@ class TrainConfig:
     ema_end: float = 1.0
     seed: int = 42
     normalize_targets: bool = True
+    gradient_checkpointing: bool = False
 
 
 @dataclass

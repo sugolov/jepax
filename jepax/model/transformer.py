@@ -197,6 +197,7 @@ class TransformerBlock(eqx.Module):
 class Transformer(eqx.Module):
     blocks: list
     pe: PositionalEncoding
+    gradient_checkpointing: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -209,6 +210,7 @@ class Transformer(eqx.Module):
         seq_len: int = 2048,
         pe_type: str = "1d",
         grid_size: Optional[int] = None,
+        gradient_checkpointing: bool = False,
         *,
         key: Key[Array, ""],
     ):
@@ -233,6 +235,7 @@ class Transformer(eqx.Module):
             self.pe = PositionalEncoding2D(
                 grid_size=grid_size, dim=dim, seq_len=seq_len
             )
+        self.gradient_checkpointing = gradient_checkpointing
 
     def __call__(
         self,
@@ -254,7 +257,12 @@ class Transformer(eqx.Module):
         intermediates = [x] if get_intermediates else None
 
         for block, k in zip(self.blocks, keys):
-            x = block(x, key=k, train=train, attn_mask=attn_mask)
+            if self.gradient_checkpointing:
+                x = eqx.filter_checkpoint(block)(
+                    x, key=k, train=train, attn_mask=attn_mask
+                )
+            else:
+                x = block(x, key=k, train=train, attn_mask=attn_mask)
 
             if intermediates is not None:
                 intermediates += [x]

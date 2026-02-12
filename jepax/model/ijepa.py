@@ -127,6 +127,7 @@ def get_ijepa_model(
     img_size: int = 224,
     p_drop: float = 0.1,
     seq_len: int = 256,
+    gradient_checkpointing: bool = False,
 ):
     enc_name, pred_name = get_ijepa_config(name)
 
@@ -150,8 +151,12 @@ def get_ijepa_model(
         seq_len=seq_len,
     )
 
-    encoder = IJEPAEncoder(**enc_config, key=k1)
-    predictor = IJEPAPredictor(**pred_config, key=k2)
+    encoder = IJEPAEncoder(
+        **enc_config, gradient_checkpointing=gradient_checkpointing, key=k1
+    )
+    predictor = IJEPAPredictor(
+        **pred_config, gradient_checkpointing=gradient_checkpointing, key=k2
+    )
     model = IJEPA(encoder=encoder, predictor=predictor)
     model = fix_init_weight(model)
     return model, enc_config["dim"]
@@ -211,6 +216,7 @@ class IJEPAEncoder(eqx.Module):
         mlp_ratio: float = 3.0,
         p_drop: float = 0.1,
         seq_len: int = 2048,
+        gradient_checkpointing: bool = False,
         *,
         key: Key[Array, ""],
     ):
@@ -227,6 +233,7 @@ class IJEPAEncoder(eqx.Module):
             seq_len=seq_len,
             key=k2,
             causal=False,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.pe = PositionalEncoding2D(dim=dim, seq_len=seq_len, grid_size=grid_size)
         self.dim = dim
@@ -297,6 +304,7 @@ class IJEPAPredictor(eqx.Module):
         mlp_ratio: float = 3.0,
         p_drop: float = 0.1,
         seq_len: int = 2048,
+        gradient_checkpointing: bool = False,
         *,
         key: Key[Array, ""],
     ):
@@ -312,6 +320,7 @@ class IJEPAPredictor(eqx.Module):
             seq_len=seq_len,
             key=k2,
             causal=False,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.pred_token = jax.random.normal(k3, (1, latent_dim)) * 0.02
         self.out_proj = eqx.nn.Linear(latent_dim, dim, key=k4)
