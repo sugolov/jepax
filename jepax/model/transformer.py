@@ -113,6 +113,8 @@ class Attention(eqx.Module):
         qkv = qkv.reshape(S, self.num_head, -1)  # (S, N, 3*Dh)
         q, k, v = jnp.split(qkv, 3, axis=-1)  # each (S, N, Dh) = (T, N, H)
 
+        if mask is not None:
+            mask = mask[None, :, :]  # (1, T, S)
         vals = jax.nn.dot_product_attention(
             q, k, v, mask=mask, is_causal=self.causal, implementation="cudnn"
         )  # (S, N, Dh)
