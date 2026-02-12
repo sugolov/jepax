@@ -172,14 +172,15 @@ def _sincos_embed(positions, dim):
     return pe.reshape(positions.shape[0], dim)
 
 
-def compute_2d_pe(flat_indices, grid_size, dim):
+def compute_2d_pe(flat_indices, grid_size, dim, dtype=jnp.float32):
     """Compute 2D sinusoidal PE from flat patch indices."""
     half = dim // 2
     cols = flat_indices % grid_size
     rows = flat_indices // grid_size
-    return jax.lax.stop_gradient(
-        jnp.concatenate([_sincos_embed(cols, half), _sincos_embed(rows, half)], axis=-1)
+    pe = jnp.concatenate(
+        [_sincos_embed(cols, half), _sincos_embed(rows, half)], axis=-1
     )
+    return jax.lax.stop_gradient(pe.astype(dtype))
 
 
 def mask_to_indices(mask: Array, max_len: int) -> tuple[Array, int]:
@@ -354,16 +355,17 @@ class IJEPAPredictor(eqx.Module):
         """
         # Project context to predictor dimension
         ctx_proj = jax.vmap(self.in_proj)(ctx_emb)  # [seq_len, latent_dim]
+        dtype = ctx_proj.dtype
 
-        ctx_pos = compute_2d_pe(ctx_indices, self.grid_size, self.latent_dim)
+        ctx_pos = compute_2d_pe(ctx_indices, self.grid_size, self.latent_dim, dtype=dtype)
         ctx_proj = ctx_proj + ctx_pos
 
         # Create pred_tokens with target positional embeddings
-        tgt_pos = compute_2d_pe(tgt_indices, self.grid_size, self.latent_dim)
+        tgt_pos = compute_2d_pe(tgt_indices, self.grid_size, self.latent_dim, dtype=dtype)
         pred_tokens = self.pred_token + tgt_pos
 
         total_valid = n_ctx + n_tgt
-        combined = jnp.zeros((seq_len, self.latent_dim))
+        combined = jnp.zeros((seq_len, self.latent_dim), dtype=dtype)
 
         # Place context tokens (first n_ctx positions)
         ctx_mask = jnp.arange(seq_len) < n_ctx
