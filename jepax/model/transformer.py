@@ -114,7 +114,7 @@ class Attention(eqx.Module):
         q, k, v = jnp.split(qkv, 3, axis=-1)  # each (S, N, Dh) = (T, N, H)
 
         vals = jax.nn.dot_product_attention(
-            q, k, v, mask=mask, is_causal=self.causal
+            q, k, v, mask=mask, is_causal=self.causal, implementation="cudnn"
         )  # (S, N, Dh)
         vals = vals.reshape(S, -1)  # (S, D)
 
