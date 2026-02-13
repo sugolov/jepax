@@ -126,7 +126,11 @@ class Attention(eqx.Module):
         if mask is not None and self.implementation == "cudnn":
             mask = jnp.broadcast_to(mask[None, :, :], (self.num_head, S, S))
         vals = jax.nn.dot_product_attention(
-            q, k, v, mask=mask, is_causal=self.causal,
+            q,
+            k,
+            v,
+            mask=mask,
+            is_causal=self.causal,
             **({"implementation": self.implementation} if self.implementation else {}),
         )  # (S, N, Dh)
         vals = vals.reshape(S, -1)  # (S, D)
@@ -156,8 +160,11 @@ class TransformerBlock(eqx.Module):
     ):
         k1, k2 = jax.random.split(key)
         self.attn = Attention(
-            dim=dim, num_head=num_head, causal=causal,
-            implementation=attn_implementation, key=k1,
+            dim=dim,
+            num_head=num_head,
+            causal=causal,
+            implementation=attn_implementation,
+            key=k1,
         )
         self.ff = FeedForward(dim=dim, mlp_ratio=mlp_ratio, key=k2)
         self.ln1 = eqx.nn.LayerNorm(dim)

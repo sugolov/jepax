@@ -475,6 +475,10 @@ def train_ijepa(
 
     @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+        if data_sharding is not None:
+            x, z_ema, mask_ctx, mask_pred = eqx.filter_shard(
+                (x, z_ema, mask_ctx, mask_pred), data_sharding
+            )
         loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred)
         grad_norms = get_grad_norms(grads)
         updates, opt_state = optimizer.update(grads, opt_state, model)

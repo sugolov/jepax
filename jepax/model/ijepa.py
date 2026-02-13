@@ -1,9 +1,9 @@
+from typing import Optional
+
 import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Key
-
-from typing import Optional
 
 from jepax.model.transformer import (
     PositionalEncoding2D,
@@ -370,11 +370,15 @@ class IJEPAPredictor(eqx.Module):
         ctx_proj = jax.vmap(self.in_proj)(ctx_emb)  # [seq_len, latent_dim]
         dtype = ctx_proj.dtype
 
-        ctx_pos = compute_2d_pe(ctx_indices, self.grid_size, self.latent_dim, dtype=dtype)
+        ctx_pos = compute_2d_pe(
+            ctx_indices, self.grid_size, self.latent_dim, dtype=dtype
+        )
         ctx_proj = ctx_proj + ctx_pos
 
         # Create pred_tokens with target positional embeddings
-        tgt_pos = compute_2d_pe(tgt_indices, self.grid_size, self.latent_dim, dtype=dtype)
+        tgt_pos = compute_2d_pe(
+            tgt_indices, self.grid_size, self.latent_dim, dtype=dtype
+        )
         pred_tokens = self.pred_token + tgt_pos
 
         total_valid = n_ctx + n_tgt
