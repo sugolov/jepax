@@ -368,7 +368,10 @@ def train_ijepa(
 
     # Sharding setup
     if shard and num_devices > 1:
-        mesh = jax.make_mesh((num_devices,), ("batch",))
+        mesh = jax.make_mesh(
+            (num_devices,), ("batch",),
+            axis_types=(jax.sharding.AxisType.Auto,),
+        )
         data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
         model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
     else:
