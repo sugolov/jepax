@@ -477,20 +477,22 @@ def train_ijepa(
 
         @eqx.filter_jit
         def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-            def loss_fn(model):
-                params, static = eqx.partition(model, eqx.is_array)
+            params, static = eqx.partition(model, eqx.is_array)
 
-                @partial(
-                    jax.shard_map,
-                    mesh=mesh,
-                    in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
-                    out_specs=P(),
-                )
-                def sharded_loss(params, x, z_ema, mask_ctx, mask_pred):
-                    model = eqx.combine(params, static)
+            @partial(
+                jax.shard_map,
+                mesh=mesh,
+                in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
+                out_specs=(P(), P()),
+            )
+            def sharded_loss_and_grad(params, x, z_ema, mask_ctx, mask_pred):
+                model_local = eqx.combine(params, static)
+
+                @eqx.filter_value_and_grad
+                def local_loss(model_local, x, z_ema, mask_ctx, mask_pred):
                     seq_len = z_ema.shape[1]
                     z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-                        lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
+                        lambda xi, mc, mp: model_local(None, xi, mc, mp, train=True)
                     )(x, mask_ctx, mask_pred)
                     z_ema_f = z_ema.astype(jnp.float32)
                     z_pred = z_pred.astype(jnp.float32)
@@ -504,15 +506,24 @@ def train_ijepa(
                     valid_mask = pos_idx < n_tgt[:, None]
                     diff = z_pred_shifted - z_tgt
                     abs_diff = jnp.abs(diff)
-                    smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
+                    smooth_l1 = jnp.where(
+                        abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5
+                    )
                     loss_per_token = jnp.mean(smooth_l1, axis=-1)
                     numer = jnp.sum(loss_per_token * valid_mask)
-                    denom = jnp.sum(valid_mask)
-                    return jax.lax.psum(numer, "batch") / jax.lax.psum(denom, "batch")
+                    denom = jnp.maximum(jnp.sum(valid_mask), 1.0)
+                    return numer / denom
 
-                return sharded_loss(params, x, z_ema, mask_ctx, mask_pred)
+                loss, grads = local_loss(
+                    model_local, x, z_ema, mask_ctx, mask_pred
+                )
+                loss = jax.lax.pmean(loss, "batch")
+                grads = jax.lax.pmean(grads, "batch")
+                return loss, grads
 
-            loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
+            loss, grads = sharded_loss_and_grad(
+                params, x, z_ema, mask_ctx, mask_pred
+            )
             grad_norms = get_grad_norms(grads)
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
