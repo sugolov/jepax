@@ -362,6 +362,7 @@ def train_ijepa(
     eval_cfg = cfg.eval
 
     key = jax.random.key(train_cfg.seed)
+    print(f"JAX version: {jax.__version__}")
     print(f"JAX backend: {jax.devices()[0].platform}")
     print(f"JAX devices: {jax.devices()}")
     num_devices = len(jax.devices())
@@ -549,6 +550,15 @@ def train_ijepa(
                 print(f"model dtype: {model_dtype}")
                 print(f"x: {x.shape}, dtype: {x.dtype}")
                 print(f"z_ema: {z_ema.shape}, dtype: {z_ema.dtype}")
+                if data_sharding is not None:
+                    print(f"mesh: {data_sharding.mesh}")
+                    print(f"x.sharding: {x.sharding}")
+                    print(f"z_ema.sharding: {z_ema.sharding}")
+                    print(f"mask_ctx.sharding: {mask_ctx.sharding}")
+                    model_leaf = jax.tree.leaves(eqx.filter(model, eqx.is_array))[0]
+                    print(f"model leaf sharding: {model_leaf.sharding}")
+                    print(f"x.is_fully_replicated: {x.sharding.is_fully_replicated}")
+                    print(f"z_ema.is_fully_replicated: {z_ema.sharding.is_fully_replicated}")
 
             step_time = time.time()
             model, opt_state, loss, grad_norms = step_model(
