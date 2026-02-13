@@ -369,7 +369,8 @@ def train_ijepa(
     # Sharding setup
     if shard and num_devices > 1:
         mesh = jax.make_mesh(
-            (num_devices,), ("batch",),
+            (num_devices,),
+            ("batch",),
             axis_types=(jax.sharding.AxisType.Auto,),
         )
         data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
@@ -478,7 +479,8 @@ def train_ijepa(
 
     @eqx.filter_jit
     def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-        if data_sharding is not None:
+        if model_sharding is not None:
+            model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
             x, z_ema, mask_ctx, mask_pred = eqx.filter_shard(
                 (x, z_ema, mask_ctx, mask_pred), data_sharding
             )
@@ -487,8 +489,9 @@ def train_ijepa(
         updates, opt_state = optimizer.update(grads, opt_state, model)
         model = eqx.apply_updates(model, updates)
         if model_sharding is not None:
-            sharded = eqx.filter_shard((model, opt_state, loss), model_sharding)
-            return *sharded, grad_norms
+            model, opt_state, loss = eqx.filter_shard(
+                (model, opt_state, loss), model_sharding
+            )
         return model, opt_state, loss, grad_norms
 
     @partial(jax.jit, static_argnums=(1, 2, 3))
