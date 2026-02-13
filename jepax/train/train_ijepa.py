@@ -369,16 +369,14 @@ def train_ijepa(
 
     # Sharding setup
     if shard and num_devices > 1:
-        mesh = jax.make_mesh(
-            (num_devices,),
-            ("batch",),
-            axis_types=(jax.sharding.AxisType.Auto,),
-        )
+        mesh = jax.make_mesh((num_devices,), ("batch",))
         data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
-        model_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec())
+        assert data_cfg.batch_size % num_devices == 0, (
+            f"Batch size {data_cfg.batch_size} must be divisible by {num_devices} devices"
+        )
     else:
         data_sharding = None
-        model_sharding = None
+        shard = False
 
     # Directory and logging
     Path(save_dir).mkdir(parents=True, exist_ok=True)
@@ -462,11 +460,6 @@ def train_ijepa(
         model = jax.tree.map(to_bf16, model)
         ema_encoder = jax.tree.map(to_bf16, ema_encoder)
 
-    if model_sharding is not None:
-        model, ema_encoder, opt_state = eqx.filter_shard(
-            (model, ema_encoder, opt_state), model_sharding
-        )
-
     # init logging
     if use_wandb and wandb is None:
         raise ImportError("wandb is required for --use_wandb. pip install wandb")
@@ -478,22 +471,52 @@ def train_ijepa(
             config=asdict(cfg),
         )
 
-    @eqx.filter_jit
-    def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-        if model_sharding is not None:
-            model, opt_state = eqx.filter_shard((model, opt_state), model_sharding)
-            x, z_ema, mask_ctx, mask_pred = eqx.filter_shard(
-                (x, z_ema, mask_ctx, mask_pred), data_sharding
-            )
-        loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred)
-        grad_norms = get_grad_norms(grads)
-        updates, opt_state = optimizer.update(grads, opt_state, model)
-        model = eqx.apply_updates(model, updates)
-        if model_sharding is not None:
-            model, opt_state, loss = eqx.filter_shard(
-                (model, opt_state, loss), model_sharding
-            )
-        return model, opt_state, loss, grad_norms
+    P = jshard.PartitionSpec
+
+    if shard:
+        @eqx.filter_jit
+        def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+            def loss_fn(model):
+                @partial(jax.shard_map, mesh=mesh,
+                         in_specs=(P('batch'), P('batch'), P('batch'), P('batch')),
+                         out_specs=P())
+                def sharded_loss(x, z_ema, mask_ctx, mask_pred):
+                    seq_len = z_ema.shape[1]
+                    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
+                        lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
+                    )(x, mask_ctx, mask_pred)
+                    z_ema_f = z_ema.astype(jnp.float32)
+                    z_pred = z_pred.astype(jnp.float32)
+                    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema_f, tgt_indices)
+                    def shift_pred(z_p, ps):
+                        return jnp.roll(z_p, -ps, axis=0)
+                    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
+                    pos_idx = jnp.arange(seq_len)[None, :]
+                    valid_mask = pos_idx < n_tgt[:, None]
+                    diff = z_pred_shifted - z_tgt
+                    abs_diff = jnp.abs(diff)
+                    smooth_l1 = jnp.where(
+                        abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5
+                    )
+                    loss_per_token = jnp.mean(smooth_l1, axis=-1)
+                    numer = jnp.sum(loss_per_token * valid_mask)
+                    denom = jnp.sum(valid_mask)
+                    return jax.lax.psum(numer, 'batch') / jax.lax.psum(denom, 'batch')
+                return sharded_loss(x, z_ema, mask_ctx, mask_pred)
+
+            loss, grads = eqx.filter_value_and_grad(loss_fn)(model)
+            grad_norms = get_grad_norms(grads)
+            updates, opt_state = optimizer.update(grads, opt_state, model)
+            model = eqx.apply_updates(model, updates)
+            return model, opt_state, loss, grad_norms
+    else:
+        @eqx.filter_jit
+        def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+            loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred)
+            grad_norms = get_grad_norms(grads)
+            updates, opt_state = optimizer.update(grads, opt_state, model)
+            model = eqx.apply_updates(model, updates)
+            return model, opt_state, loss, grad_norms
 
     @partial(jax.jit, static_argnums=(1, 2, 3))
     def generate_masks(key, masker, num_pred_masks, batch_size):
@@ -543,6 +566,8 @@ def train_ijepa(
             z_ema = compute_target_reps(ema_encoder, x)
             if normalize_tgt:
                 z_ema = normalize_targets(z_ema)
+            if data_sharding is not None:
+                z_ema = jax.device_put(z_ema, data_sharding)
             target_time = time.time() - target_time
 
             if step == start_epoch * steps_per_epoch:
@@ -555,10 +580,6 @@ def train_ijepa(
                     print(f"x.sharding: {x.sharding}")
                     print(f"z_ema.sharding: {z_ema.sharding}")
                     print(f"mask_ctx.sharding: {mask_ctx.sharding}")
-                    model_leaf = jax.tree.leaves(eqx.filter(model, eqx.is_array))[0]
-                    print(f"model leaf sharding: {model_leaf.sharding}")
-                    print(f"x.is_fully_replicated: {x.sharding.is_fully_replicated}")
-                    print(f"z_ema.is_fully_replicated: {z_ema.sharding.is_fully_replicated}")
 
             step_time = time.time()
             model, opt_state, loss, grad_norms = step_model(
