@@ -1,14 +1,15 @@
 <h1 align='center'>jepax</h1>
 <h2 align='center'>A JAX-based library for JEPA research</h2>
+<h3 align='center'>(<a href="https://sugolov.github.io/blog/posts/20260211/">blog</a>)</h3>
 
-jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/patrick-kidger/equinox) implementation of Joint-Embedding Predictive Architecture (JEPA) models and related self-supervised learning methods. The focus is on straightforward implementations that allow for quick experimentation with new regularizers, losses, or further downstream tasks. *We are actively building this library: let's make some PRs!*
+jepax is a [JAX](https://github.com/google/jax)/[Equinox](https://github.com/patrick-kidger/equinox) implementation of Joint-Embedding Predictive Architecture (JEPA) models and related self-supervised learning methods. The focus is on straightforward implementations that allow for quick experimentation with new regularizers, losses, or further downstream tasks. *We are actively building this library: PRs welcome!*
 
 ### v0: features 
-We focused on 1-to-1 configs, losses, and logging with the original PyTorch implementation. Below is a  reproduction of IJEPA-B with data parallelization on 8xA100.
+We focused on 1-to-1 configs, losses, and logging with the original PyTorch implementation. Below is a reproduction of IJEPA-B with data parallelization on 8xA100.
 
 ![IJEPA-B training curves](images/ijepa_b.png)
 
-<p align='center'>Training loss and linear probe accuracy for IJEPA-B trained for 300 epochs on 8xA100.</p>
+<p align='center'>Training loss and linear probe accuracy for IJEPA-B trained for 300 epochs on 8xA100 80GB.</p>
 
 ## Installation
 
