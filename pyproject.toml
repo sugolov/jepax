@@ -1,23 +1,51 @@
 [project]
 name = "jepax"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1.1"
+description = "Joint-Embedding Predictive Architectures (JEPAs) in JAX"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
+authors = [
+  {name = "Anton Sugolov", email = "asugolov@gmail.com"},
+  {name = "Owen Lockwood", email = "contact_owenl@protonmail.com"}
+]
+keywords = ["jax", "machine-learning", "self-supervised-learning", "jepa"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+urls = { repository = "https://github.com/sugolov/jepax" }
+license = {file = "LICENSE"}
+
 dependencies = [
-    "aim>=3.29.1",
+    "dacite>=1.8.0",
     "einops>=0.8.1",
     "equinox>=0.13.2",
-    "flax>=0.12.1",
-    "jax>=0.8.1",
-    "jaxlib>=0.8.1",
-    "matplotlib>=3.10.7",
-    "numpy>=2.3.5",
+    "grain>=0.2.0",
+    "jax>=0.6.0",
+    "numpy>=1.26.0",
     "optax>=0.2.6",
-    "pytest>=9.0.1",
+    "pyyaml>=6.0",
     "torch>=2.9.1",
     "torchvision>=0.24.1",
+]
+
+[project.optional-dependencies]
+experiments = [
+    "aim>=3.25.0",
+    "datasets>=3.0.0",
+    "huggingface_hub>=0.25.0",
+    "matplotlib>=3.10.7",
+    "pytest>=9.0.1",
     "tqdm>=4.67.1",
+    "wandb>=0.18.0",
 ]
 
 [build-system]
@@ -26,3 +54,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["jepax"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+src = []
+
+[tool.ruff.lint]
+fixable = ["I001", "F401"]
+ignore = ["E402", "E731", "E741", "F722"]
+select = ["E", "F", "I001"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+order-by-type = false
+
+[tool.pyright]
+include = ["jepax"]
