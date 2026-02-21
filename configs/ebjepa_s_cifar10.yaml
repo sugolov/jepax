@@ -1,7 +1,7 @@
 # EB-JEPA ViT-S on CIFAR-10
 data:
   dataset: cifar10
-  batch_size: 512
+  batch_size: 256
   num_workers: 4
   prefetch_factor: 4
 model:
@@ -24,8 +24,8 @@ train:
   optimizer: lars
 loss:
   type: vicreg
-  std_coeff: 25.0
-  cov_coeff: 1.0
+  std_coeff: 1.0
+  cov_coeff: 80.0
   # bcs_lmbd: 10.0
   # bcs_num_slices: 256
 aug:

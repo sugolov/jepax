@@ -85,8 +85,18 @@ def init_from_config(cfg: EBJEPAConfig, img_size: int, steps_per_epoch: int, key
         decay_steps=total_steps,
     )
 
+    def exclude_bias_and_norm(params):
+        return jax.tree.map(lambda p: p.ndim >= 2, params)
+
     if train_cfg.optimizer == "lars":
-        optimizer = optax.lars(learning_rate=lr_schedule, weight_decay=train_cfg.wd)
+        optimizer = optax.lars(
+            learning_rate=lr_schedule,
+            weight_decay=train_cfg.wd,
+            trust_coefficient=0.02,
+            trust_ratio_mask=exclude_bias_and_norm,
+            weight_decay_mask=exclude_bias_and_norm,
+            momentum=0.9,
+        )
     elif train_cfg.optimizer in ("adam", "adamw"):
         optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=train_cfg.wd)
     else:
