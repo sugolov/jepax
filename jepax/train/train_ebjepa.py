@@ -3,7 +3,6 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import asdict
-from functools import partial
 from pathlib import Path
 
 import equinox as eqx
@@ -21,12 +20,14 @@ except ImportError:
     wandb = None
 
 from jepax.config import EBJEPAConfig, load_ebjepa_config
+from jepax.data import build_torch_dataloader
 from jepax.data.augmentations import augment_batch
 from jepax.data.dataset import build_two_view_dataloader
 from jepax.losses import bcs_loss, vicreg_loss
 from jepax.model.ebjepa import get_ebjepa_model
 from jepax.train.eval_ijepa import evaluate_linear_probe
-from jepax.data import build_torch_dataloader
+from jepax.utils import filter_shard_map
+
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -205,7 +206,6 @@ def train_ebjepa(
     )
     val_loader = None
     if eval_cfg.interval > 0:
-
         val_loader, _, _, _ = build_torch_dataloader(
             data_cfg.dataset,
             data_dir,
@@ -269,23 +269,18 @@ def train_ebjepa(
 
         @eqx.filter_jit
         def step_model(model, opt_state, x1, x2, step):
-            params, static = eqx.partition(model, eqx.is_array)
-
-            @partial(
-                jax.shard_map,
+            @filter_shard_map(
                 mesh=mesh,
                 in_specs=(P(), P("batch"), P("batch"), P()),
                 out_specs=(P(), P(), P()),
             )
-            def sharded_loss_and_grad(params, x1, x2, step):
-                model_local = eqx.combine(params, static)
-
+            def sharded_loss_and_grad(model, x1, x2, step):
                 @eqx.filter_value_and_grad(has_aux=True)
-                def local_loss(model_local, x1, x2, step):
+                def local_loss(model, x1, x2, step):
                     keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
                     def fwd(k, xi):
-                        return model_local(k, xi, train=True)
+                        return model(k, xi, train=True)
 
                     _, z1 = jax.vmap(fwd)(keys, x1)
                     _, z2 = jax.vmap(fwd)(keys, x2)
@@ -300,13 +295,13 @@ def train_ebjepa(
                         )
                     return ld["loss"], ld
 
-                (loss, loss_dict), grads = local_loss(model_local, x1, x2, step)
+                (loss, loss_dict), grads = local_loss(model, x1, x2, step)
                 loss = jax.lax.pmean(loss, "batch")
                 grads = jax.lax.pmean(grads, "batch")
                 return loss, grads, loss_dict
 
             step_arr = jnp.array([step])
-            loss, grads, loss_dict = sharded_loss_and_grad(params, x1, x2, step_arr)
+            loss, grads, loss_dict = sharded_loss_and_grad(model, x1, x2, step_arr)
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss, loss_dict
@@ -355,11 +350,9 @@ def train_ebjepa(
         for batch in pbar:
             load_time = time.time() - load_time
 
-            # Get two views (HWC numpy from dataloader)
             v1 = batch["view1"]  # [B, H, W, C]
             v2 = batch["view2"]
 
-            # Apply dm_pix augmentations (HWC)
             key, k1, k2 = jax.random.split(key, 3)
             cjp = aug_cfg.color_jitter_prob
             gsp = aug_cfg.grayscale_prob
@@ -430,7 +423,6 @@ def train_ebjepa(
             )
             load_time = time.time()
 
-        # Probe eval
         run_probe = (
             eval_cfg.interval > 0
             and val_loader is not None

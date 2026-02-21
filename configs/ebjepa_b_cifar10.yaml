@@ -23,8 +23,10 @@ train:
   optimizer: lars
 loss:
   type: vicreg
-  std_coeff: 1.0
-  cov_coeff: 80.0
+  std_coeff: 25.0
+  cov_coeff: 1.0
+  # bcs_lmbd: 10.0
+  # bcs_num_slices: 256
 aug:
   random_crop_scale: [0.2, 1.0]
   color_jitter_prob: 0.8

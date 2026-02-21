@@ -220,3 +220,5 @@ experiments/*slurm*
 .logs
 profiles
 wandb/
+.swift-version
+swiftly.pkg

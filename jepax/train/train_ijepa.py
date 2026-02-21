@@ -23,10 +23,10 @@ except ImportError:
 
 from jepax.config import IJEPAConfig, load_ijepa_config
 from jepax.data import build_dataloader
-from jepax.filter_shard_map import filter_shard_map
 from jepax.losses import smooth_l1_loss
 from jepax.model import get_ijepa_model, IJEPAMasker
 from jepax.train.eval_ijepa import evaluate_linear_probe
+from jepax.utils import filter_shard_map
 
 
 def parse_args():
@@ -474,22 +474,17 @@ def train_ijepa(
 
         @eqx.filter_jit
         def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-            params, static = eqx.partition(model, eqx.is_array)
-
-            @partial(
-                jax.shard_map,
+            @filter_shard_map(
                 mesh=mesh,
                 in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
                 out_specs=(P(), P()),
             )
-            def sharded_loss_and_grad(params, x, z_ema, mask_ctx, mask_pred):
-                model_local = eqx.combine(params, static)
-
+            def sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred):
                 @eqx.filter_value_and_grad
-                def local_loss(model_local, x, z_ema, mask_ctx, mask_pred):
+                def local_loss(model, x, z_ema, mask_ctx, mask_pred):
                     seq_len = z_ema.shape[1]
-                    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-                        lambda xi, mc, mp: model_local(None, xi, mc, mp, train=True)
+                    z_pred, tgt_indices, n_tgt, pred_start, _ = jax.vmap(
+                        lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
                     )(x, mask_ctx, mask_pred)
                     z_ema_f = z_ema.astype(jnp.float32)
                     z_pred = z_pred.astype(jnp.float32)
@@ -503,12 +498,12 @@ def train_ijepa(
                     valid_mask = pos_idx < n_tgt[:, None]
                     return smooth_l1_loss(z_pred_shifted, z_tgt, valid_mask)
 
-                loss, grads = local_loss(model_local, x, z_ema, mask_ctx, mask_pred)
+                loss, grads = local_loss(model, x, z_ema, mask_ctx, mask_pred)
                 loss = jax.lax.pmean(loss, "batch")
                 grads = jax.lax.pmean(grads, "batch")
                 return loss, grads
 
-            loss, grads = sharded_loss_and_grad(params, x, z_ema, mask_ctx, mask_pred)
+            loss, grads = sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred)
             grad_norms = get_grad_norms(grads)
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
