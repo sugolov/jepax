@@ -40,7 +40,6 @@ dependencies = [
 
 [project.optional-dependencies]
 experiments = [
-    "aim>=3.25.0",
     "datasets>=3.0.0",
     "huggingface_hub>=0.25.0",
     "matplotlib>=3.10.7",

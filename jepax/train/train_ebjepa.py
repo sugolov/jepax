@@ -302,7 +302,9 @@ def train_ebjepa(
 
             step_arr = jnp.array([step])
             loss, grads, loss_dict = sharded_loss_and_grad(model, x1, x2, step_arr)
-            updates, opt_state = optimizer.update(grads, opt_state, model)
+            updates, opt_state = optimizer.update(
+                grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
+            )
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss, loss_dict
 
@@ -331,7 +333,9 @@ def train_ebjepa(
                 return ld["loss"], ld
 
             (loss, loss_dict), grads = loss_fn(model, x1, x2, step)
-            updates, opt_state = optimizer.update(grads, opt_state, model)
+            updates, opt_state = optimizer.update(
+                grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
+            )
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss, loss_dict
 
