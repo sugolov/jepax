@@ -82,8 +82,23 @@ class Projector(eqx.Module):
         return self.linear3(x), state
 
 
-class EBJEPA(eqx.Module):
+class EBEncoder(eqx.Module):
     encoder: IJEPAEncoder
+    norm: eqx.nn.LayerNorm
+
+    def __call__(self, key, x, mask=None, train=True, get_intermediates=False):
+        result = self.encoder(key, x, mask=mask, train=train, get_intermediates=get_intermediates)
+        if get_intermediates:
+            out, intermediates, indices, n_keep = result
+            out = jax.vmap(self.norm)(out)
+            return out, intermediates, indices, n_keep
+        out, indices, n_keep = result
+        out = jax.vmap(self.norm)(out)
+        return out, indices, n_keep
+
+
+class EBJEPA(eqx.Module):
+    encoder: EBEncoder
     projector: Projector
 
     def __call__(
@@ -136,12 +151,14 @@ def get_ebjepa_model(
         seq_len=seq_len,
     )
 
-    encoder = IJEPAEncoder(
+    ijepa_encoder = IJEPAEncoder(
         **enc_config,
         gradient_checkpointing=gradient_checkpointing,
         attn_implementation=attn_implementation,
         key=k1,
     )
+    norm = eqx.nn.LayerNorm(enc_config["dim"])
+    encoder = EBEncoder(encoder=ijepa_encoder, norm=norm)
     projector = Projector(enc_config["dim"], ph, po, key=k2, norm_type=proj_norm)
     model = EBJEPA(encoder=encoder, projector=projector)
     return model, enc_config["dim"]
