@@ -69,9 +69,13 @@ def init_from_config(cfg: EBJEPAConfig, img_size: int, steps_per_epoch: int, key
         p_drop=model_cfg.p_drop,
         proj_hidden_dim=model_cfg.proj_hidden_dim,
         proj_output_dim=model_cfg.proj_output_dim,
+        proj_norm=model_cfg.proj_norm,
         gradient_checkpointing=train_cfg.gradient_checkpointing,
         attn_implementation=attn_impl,
     )
+
+    use_bn = model_cfg.proj_norm == "bn"
+    bn_state = eqx.nn.State(model) if use_bn else None
 
     lr_schedule = optax.warmup_cosine_decay_schedule(
         init_value=train_cfg.start_lr,
@@ -90,12 +94,14 @@ def init_from_config(cfg: EBJEPAConfig, img_size: int, steps_per_epoch: int, key
 
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-    return model, optimizer, opt_state, lr_schedule, embed_dim, key
+    return model, optimizer, opt_state, lr_schedule, embed_dim, bn_state, key
 
 
-def save_checkpoint(model, opt_state, epoch, cfg: EBJEPAConfig, path):
+def save_checkpoint(model, opt_state, bn_state, epoch, cfg: EBJEPAConfig, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
+    if bn_state is not None:
+        eqx.tree_serialise_leaves(path + "_bn_state.eqx", bn_state)
     with open(path + "_meta.yaml", "w") as f:
         yaml.dump({"epoch": epoch, "config": asdict(cfg)}, f, default_flow_style=False)
 
@@ -108,12 +114,23 @@ def load_checkpoint(path, img_size, steps_per_epoch, key):
     cfg = dacite.from_dict(
         EBJEPAConfig, meta["config"], config=dacite.Config(cast=[tuple])
     )
-    model, optimizer, opt_state, lr_schedule, embed_dim, key = init_from_config(
-        cfg, img_size, steps_per_epoch, key
-    )
+    ret = init_from_config(cfg, img_size, steps_per_epoch, key)
+    model, optimizer, opt_state, lr_schedule, embed_dim, bn_state, key = ret
     model = eqx.tree_deserialise_leaves(path + "_model.eqx", model)
     opt_state = eqx.tree_deserialise_leaves(path + "_opt.eqx", opt_state)
-    return meta["epoch"], cfg, model, optimizer, opt_state, lr_schedule, embed_dim, key
+    if bn_state is not None and os.path.exists(path + "_bn_state.eqx"):
+        bn_state = eqx.tree_deserialise_leaves(path + "_bn_state.eqx", bn_state)
+    return (
+        meta["epoch"],
+        cfg,
+        model,
+        optimizer,
+        opt_state,
+        lr_schedule,
+        embed_dim,
+        bn_state,
+        key,
+    )
 
 
 def to_bf16(x):
@@ -227,9 +244,8 @@ def train_ebjepa(
 
     if resume is None:
         start_epoch = 0
-        model, optimizer, opt_state, lr_schedule, embed_dim, key = init_from_config(
-            cfg, img_size, steps_per_epoch, key
-        )
+        ret = init_from_config(cfg, img_size, steps_per_epoch, key)
+        model, optimizer, opt_state, lr_schedule, embed_dim, bn_state, key = ret
     else:
         (
             start_epoch,
@@ -239,6 +255,7 @@ def train_ebjepa(
             opt_state,
             lr_schedule,
             embed_dim,
+            bn_state,
             key,
         ) = load_checkpoint(resume, img_size, steps_per_epoch, key)
         data_cfg = cfg.data
@@ -268,7 +285,7 @@ def train_ebjepa(
     if shard:
         # todo: test sharding
         @eqx.filter_jit
-        def step_model(model, opt_state, x1, x2, bcs_key):
+        def step_model(model, opt_state, bn_state, x1, x2, bcs_key):
             @filter_shard_map(
                 mesh=mesh,
                 in_specs=(P(), P("batch"), P("batch"), P()),
@@ -280,10 +297,12 @@ def train_ebjepa(
                     keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
                     def fwd(k, xi):
-                        return model(k, xi, train=True)
+                        _, proj, st = model(k, xi, bn_state, train=True)
+                        return proj, st
 
-                    _, z1 = jax.vmap(fwd)(keys, x1)
-                    _, z2 = jax.vmap(fwd)(keys, x2)
+                    vfwd = jax.vmap(fwd, axis_name="batch", out_axes=(0, None))
+                    z1, new_st = vfwd(keys, x1)
+                    z2, new_st = vfwd(keys, x2)
                     z1 = z1.astype(jnp.float32)
                     z2 = z2.astype(jnp.float32)
 
@@ -291,35 +310,43 @@ def train_ebjepa(
                         ld = vicreg_loss(z1, z2, loss_cfg.std_coeff, loss_cfg.cov_coeff)
                     else:
                         ld = bcs_loss(
-                            z1, z2, bcs_key, loss_cfg.bcs_num_slices, loss_cfg.bcs_lmbd
+                            z1,
+                            z2,
+                            bcs_key,
+                            loss_cfg.bcs_num_slices,
+                            loss_cfg.bcs_lmbd,
                         )
-                    return ld["loss"], ld
+                    return ld["loss"], (ld, new_st)
 
-                (loss, loss_dict), grads = local_loss(model, x1, x2, bcs_key)
+                (loss, (loss_dict, new_st)), grads = local_loss(model, x1, x2, bcs_key)
                 loss = jax.lax.pmean(loss, "batch")
                 grads = jax.lax.pmean(grads, "batch")
-                return loss, grads, loss_dict
+                return loss, grads, (loss_dict, new_st)
 
-            loss, grads, loss_dict = sharded_loss_and_grad(model, x1, x2, bcs_key)
+            loss, grads, (loss_dict, new_bn_state) = sharded_loss_and_grad(
+                model, x1, x2, bcs_key
+            )
             updates, opt_state = optimizer.update(
                 grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
             )
             model = eqx.apply_updates(model, updates)
-            return model, opt_state, loss, loss_dict
+            return model, opt_state, new_bn_state, loss, loss_dict
 
     else:
 
         @eqx.filter_jit
-        def step_model(model, opt_state, x1, x2, bcs_key):
+        def step_model(model, opt_state, bn_state, x1, x2, bcs_key):
             @eqx.filter_value_and_grad(has_aux=True)
-            def loss_fn(model, x1, x2, bcs_key):
+            def loss_fn(model, bn_state, x1, x2, bcs_key):
                 keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
                 def fwd(k, xi):
-                    return model(k, xi, train=True)
+                    _, proj, st = model(k, xi, bn_state, train=True)
+                    return proj, st
 
-                _, z1 = jax.vmap(fwd)(keys, x1)
-                _, z2 = jax.vmap(fwd)(keys, x2)
+                vfwd = jax.vmap(fwd, axis_name="batch", out_axes=(0, None))
+                z1, new_st = vfwd(keys, x1)
+                z2, new_st = vfwd(keys, x2)
                 z1 = z1.astype(jnp.float32)
                 z2 = z2.astype(jnp.float32)
 
@@ -327,16 +354,22 @@ def train_ebjepa(
                     ld = vicreg_loss(z1, z2, loss_cfg.std_coeff, loss_cfg.cov_coeff)
                 else:
                     ld = bcs_loss(
-                        z1, z2, bcs_key, loss_cfg.bcs_num_slices, loss_cfg.bcs_lmbd
+                        z1,
+                        z2,
+                        bcs_key,
+                        loss_cfg.bcs_num_slices,
+                        loss_cfg.bcs_lmbd,
                     )
-                return ld["loss"], ld
+                return ld["loss"], (ld, new_st)
 
-            (loss, loss_dict), grads = loss_fn(model, x1, x2, bcs_key)
+            (loss, (loss_dict, new_bn_state)), grads = loss_fn(
+                model, bn_state, x1, x2, bcs_key
+            )
             updates, opt_state = optimizer.update(
                 grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
             )
             model = eqx.apply_updates(model, updates)
-            return model, opt_state, loss, loss_dict
+            return model, opt_state, new_bn_state, loss, loss_dict
 
     step = start_epoch * steps_per_epoch
 
@@ -380,8 +413,8 @@ def train_ebjepa(
                 print(f"x1: {x1.shape}, dtype: {x1.dtype}")
 
             step_time = time.time()
-            model, opt_state, loss, loss_dict = step_model(
-                model, opt_state, x1, x2, bcs_key
+            model, opt_state, bn_state, loss, loss_dict = step_model(
+                model, opt_state, bn_state, x1, x2, bcs_key
             )
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
             step_time = time.time() - step_time
@@ -474,7 +507,7 @@ def train_ebjepa(
 
         if (epoch + 1) % save_interval == 0:
             ckpt_path = os.path.join(save_dir, f"{run_name}_epoch_{epoch + 1}")
-            save_checkpoint(model, opt_state, epoch + 1, cfg, ckpt_path)
+            save_checkpoint(model, opt_state, bn_state, epoch + 1, cfg, ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
 
     logf.close()

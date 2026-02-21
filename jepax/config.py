@@ -86,6 +86,7 @@ class EBJEPAModelConfig:
     p_drop: float = 0.0
     proj_hidden_dim: int = 2048
     proj_output_dim: int = 2048
+    proj_norm: str = "bn"  # "bn", "ln", or "none"
     attn_implementation: str | None = None
 
 

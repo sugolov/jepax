@@ -12,6 +12,7 @@ model:
   p_drop: 0.0
   proj_hidden_dim: 2048
   proj_output_dim: 1024
+  proj_norm: bn
 train:
   epochs: 300
   lr: 0.3

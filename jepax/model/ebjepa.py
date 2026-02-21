@@ -24,24 +24,62 @@ ebjepa_configs = {
 
 
 class Projector(eqx.Module):
-    """3-layer MLP: Linear->ReLU->Linear->ReLU->Linear (no final bias)."""
+    """3-layer MLP projector with optional normalization."""
 
     linear1: eqx.nn.Linear
+    norm1: eqx.Module | None
     linear2: eqx.nn.Linear
+    norm2: eqx.Module | None
     linear3: eqx.nn.Linear
+    norm_type: str = eqx.field(static=True)
 
     def __init__(
-        self, in_dim: int, hidden_dim: int, out_dim: int, *, key: Key[Array, ""]
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int,
+        *,
+        key: Key[Array, ""],
+        norm_type: str = "bn",
     ):
         k1, k2, k3 = jax.random.split(key, 3)
         self.linear1 = eqx.nn.Linear(in_dim, hidden_dim, key=k1)
         self.linear2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=k2)
         self.linear3 = eqx.nn.Linear(hidden_dim, out_dim, use_bias=False, key=k3)
+        self.norm_type = norm_type
 
-    def __call__(self, x: Float[Array, " D"]) -> Float[Array, " P"]:
-        x = jax.nn.relu(self.linear1(x))
-        x = jax.nn.relu(self.linear2(x))
-        return self.linear3(x)
+        if norm_type == "bn":
+            self.norm1 = eqx.nn.BatchNorm(hidden_dim, axis_name="batch", mode="batch")
+            self.norm2 = eqx.nn.BatchNorm(hidden_dim, axis_name="batch", mode="batch")
+        elif norm_type == "ln":
+            self.norm1 = eqx.nn.LayerNorm(hidden_dim)
+            self.norm2 = eqx.nn.LayerNorm(hidden_dim)
+        else:
+            self.norm1 = None
+            self.norm2 = None
+
+    def __call__(
+        self,
+        x: Float[Array, " D"],
+        state: eqx.nn.State | None = None,
+        *,
+        inference: bool = False,
+    ) -> tuple[Float[Array, " P"], eqx.nn.State | None]:
+        x = self.linear1(x)
+        if self.norm_type == "bn" and self.norm1 is not None:
+            x, state = self.norm1(x, state, inference=inference)
+        elif self.norm_type == "ln" and self.norm1 is not None:
+            x = self.norm1(x)
+        x = jax.nn.relu(x)
+
+        x = self.linear2(x)
+        if self.norm_type == "bn" and self.norm2 is not None:
+            x, state = self.norm2(x, state, inference=inference)
+        elif self.norm_type == "ln" and self.norm2 is not None:
+            x = self.norm2(x)
+        x = jax.nn.relu(x)
+
+        return self.linear3(x), state
 
 
 class EBJEPA(eqx.Module):
@@ -52,12 +90,14 @@ class EBJEPA(eqx.Module):
         self,
         key: Key[Array, ""],
         x: Float[Array, "C H W"],
+        state: eqx.nn.State | None = None,
+        *,
         train: bool = True,
-    ) -> tuple[Float[Array, " D"], Float[Array, " P"]]:
+    ) -> tuple[Float[Array, " D"], Float[Array, " P"], eqx.nn.State | None]:
         out, _, _ = self.encoder(key, x, mask=None, train=train)
         features = jnp.mean(out, axis=0)  # [N_patches, D] -> [D]
-        projections = self.projector(features)
-        return features, projections
+        projections, state = self.projector(features, state, inference=not train)
+        return features, projections, state
 
 
 def get_ebjepa_model(
@@ -71,6 +111,7 @@ def get_ebjepa_model(
     p_drop: float = 0.0,
     proj_hidden_dim: int | None = None,
     proj_output_dim: int | None = None,
+    proj_norm: str = "bn",
     gradient_checkpointing: bool = False,
     attn_implementation: Optional[str] = None,
 ) -> tuple[EBJEPA, int]:
@@ -101,6 +142,6 @@ def get_ebjepa_model(
         attn_implementation=attn_implementation,
         key=k1,
     )
-    projector = Projector(enc_config["dim"], ph, po, key=k2)
+    projector = Projector(enc_config["dim"], ph, po, key=k2, norm_type=proj_norm)
     model = EBJEPA(encoder=encoder, projector=projector)
     return model, enc_config["dim"]
