@@ -296,13 +296,18 @@ def train_ebjepa(
                 def local_loss(model, x1, x2, bcs_key):
                     keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
-                    def fwd(k, xi):
-                        _, proj, st = model(k, xi, bn_state, train=True)
+                    def fwd(k, xi, state):
+                        _, proj, st = model(k, xi, state, train=True)
                         return proj, st
 
-                    vfwd = jax.vmap(fwd, axis_name="batch", out_axes=(0, None))
-                    z1, new_st = vfwd(keys, x1)
-                    z2, new_st = vfwd(keys, x2)
+                    vfwd = jax.vmap(
+                        fwd,
+                        axis_name="batch",
+                        in_axes=(0, 0, None),
+                        out_axes=(0, None),
+                    )
+                    z1, new_bn_st = vfwd(keys, x1, bn_state)
+                    z2, new_bn_st = vfwd(keys, x2, new_bn_st)
                     z1 = z1.astype(jnp.float32)
                     z2 = z2.astype(jnp.float32)
 
@@ -316,7 +321,7 @@ def train_ebjepa(
                             loss_cfg.bcs_num_slices,
                             loss_cfg.bcs_lmbd,
                         )
-                    return ld["loss"], (ld, new_st)
+                    return ld["loss"], (ld, new_bn_st)
 
                 (loss, (loss_dict, new_st)), grads = local_loss(model, x1, x2, bcs_key)
                 loss = jax.lax.pmean(loss, "batch")
@@ -340,13 +345,18 @@ def train_ebjepa(
             def loss_fn(model, bn_state, x1, x2, bcs_key):
                 keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
-                def fwd(k, xi):
-                    _, proj, st = model(k, xi, bn_state, train=True)
+                def fwd(k, xi, state):
+                    _, proj, st = model(k, xi, state, train=True)
                     return proj, st
 
-                vfwd = jax.vmap(fwd, axis_name="batch", out_axes=(0, None))
-                z1, new_st = vfwd(keys, x1)
-                z2, new_st = vfwd(keys, x2)
+                vfwd = jax.vmap(
+                    fwd,
+                    axis_name="batch",
+                    in_axes=(0, 0, None),
+                    out_axes=(0, None),
+                )
+                z1, bn_state = vfwd(keys, x1, bn_state)
+                z2, bn_state = vfwd(keys, x2, bn_state)
                 z1 = z1.astype(jnp.float32)
                 z2 = z2.astype(jnp.float32)
 
@@ -360,7 +370,7 @@ def train_ebjepa(
                         loss_cfg.bcs_num_slices,
                         loss_cfg.bcs_lmbd,
                     )
-                return ld["loss"], (ld, new_st)
+                return ld["loss"], (ld, bn_state)
 
             (loss, (loss_dict, new_bn_state)), grads = loss_fn(
                 model, bn_state, x1, x2, bcs_key
