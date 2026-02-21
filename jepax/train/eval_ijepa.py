@@ -45,6 +45,8 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
             batch_labels = batch["label"]
         else:
             batch_imgs, batch_labels = batch
+        if batch_imgs.ndim == 4 and batch_imgs.shape[-1] in (1, 3):
+            batch_imgs = np.transpose(batch_imgs, (0, 3, 1, 2))
         key, subkey = jax.random.split(key)
 
         if n_concat > 1:

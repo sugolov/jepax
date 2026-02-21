@@ -185,7 +185,7 @@ def train_ebjepa(
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    run_name = f"{exp_name}-{model_cfg.name}-{data_cfg.dataset.lower()}"
+    run_name = f"{exp_name}-{model_cfg.name}-{loss_cfg.type}-{data_cfg.dataset.lower()}"
     if bfloat16:
         run_name += "-bf16"
     if tag:
@@ -266,7 +266,7 @@ def train_ebjepa(
     P = jshard.PartitionSpec
 
     if shard:
-
+        # todo: test sharding
         @eqx.filter_jit
         def step_model(model, opt_state, x1, x2, bcs_key):
             @filter_shard_map(
