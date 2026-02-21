@@ -63,7 +63,3 @@ python -m jepax.train.train_ijepa \
 ## See Also
 
 Other JAX libraries: [Awesome JAX](https://github.com/lockwo/awesome-jax).
-
-## Cites
-
-- [MPX](https://arxiv.org/pdf/2507.03312)

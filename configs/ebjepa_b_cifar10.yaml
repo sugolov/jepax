@@ -1,0 +1,44 @@
+# EB-JEPA ViT-B on CIFAR-10
+data:
+  dataset: cifar10
+  batch_size: 256
+  num_workers: 4
+  prefetch_factor: 4
+model:
+  name: ebjepa-b
+  patch_size: 8
+  seq_len: 16
+  num_channels: 3
+  p_drop: 0.0
+  proj_hidden_dim: 2048
+  proj_output_dim: 2048
+train:
+  epochs: 300
+  lr: 0.3
+  start_lr: 3.0e-5
+  final_lr: 0.0
+  warmup_epochs: 10
+  wd: 1.0e-4
+  seed: 42
+  optimizer: lars
+loss:
+  type: vicreg
+  std_coeff: 1.0
+  cov_coeff: 80.0
+aug:
+  random_crop_scale: [0.2, 1.0]
+  color_jitter_prob: 0.8
+  grayscale_prob: 0.2
+  hflip_prob: 0.5
+eval:
+  bn_mode: ema
+  interval: 30
+  epochs: 50
+  batch_size: 16384
+  train_samples: null
+  val_samples: null
+  n_concat: 1
+  optim: lars
+  lr: 0.1
+  wd: 0.0
+  modes: [last]

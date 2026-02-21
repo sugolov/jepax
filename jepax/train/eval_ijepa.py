@@ -1,11 +1,3 @@
-"""Linear probe evaluation for I-JEPA.
-
-Paper protocol: test (last-layer / concat-4) x (with / without BN), report best.
-Uses LARS with step-wise LR decay (÷10 every 15 epochs) following MAE.
-"""
-
-import gc
-
 import equinox as eqx
 import jax
 import numpy as np
@@ -69,7 +61,6 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
     labels = np.concatenate(labels_list)[:max_samples]
     concat = np.concatenate(concat_list)[:max_samples] if concat_list else None
 
-    gc.collect()
     return last, concat, labels
 
 
@@ -217,20 +208,28 @@ def evaluate_linear_probe(
     max_train_samples=None,
     max_val_samples=None,
     verbose=True,
+    modes=None,
 ):
-    """Evaluate linear probe across all configurations."""
+    """Evaluate linear probe across configurations.
+
+    Args:
+        modes: optional list of mode names to run, e.g. ["last", "last_bn"].
+    """
+    need_concat = modes is None or any(m.startswith("concat") for m in (modes or []))
+    use_n_concat = n_concat if need_concat else 1
+
     key, k1, k2 = jax.random.split(key, 3)
 
     if verbose:
         print("Probe: extracting train features")
     train_last, train_concat, train_labels = extract_features(
-        encoder, train_loader, k1, max_train_samples, n_concat
+        encoder, train_loader, k1, max_train_samples, use_n_concat
     )
 
     if verbose:
         print("Probe: extracting val features")
     val_last, val_concat, val_labels = extract_features(
-        encoder, val_loader, k2, max_val_samples, n_concat
+        encoder, val_loader, k2, max_val_samples, use_n_concat
     )
 
     if verbose:
@@ -252,6 +251,9 @@ def evaluate_linear_probe(
                 ("concat_bn", train_concat, val_concat, embed_dim * n_concat, True),
             ]
         )
+
+    if modes is not None:
+        configs = [(n, tf, vf, d, bn) for n, tf, vf, d, bn in configs if n in modes]
 
     for name, tr_f, val_f, dim, use_bn in configs:
         if verbose:

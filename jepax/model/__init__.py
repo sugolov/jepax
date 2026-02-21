@@ -1,3 +1,4 @@
+from jepax.model.ebjepa import EBJEPA, ebjepa_configs, get_ebjepa_model, Projector
 from jepax.model.ijepa import (
     get_encoder_config,
     get_ijepa_config,
@@ -46,4 +47,9 @@ __all__ = [
     "get_encoder_config",
     "get_predictor_config",
     "IJEPAMasker",
+    # EB-JEPA
+    "EBJEPA",
+    "Projector",
+    "get_ebjepa_model",
+    "ebjepa_configs",
 ]
