@@ -382,7 +382,7 @@ def train_ebjepa(
 
             step_time = time.time()
             model, opt_state, loss, loss_dict = step_model(
-                model, opt_state, x1, x2, step
+                model, opt_state, x1, x2, jnp.array(step)
             )
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
             step_time = time.time() - step_time
