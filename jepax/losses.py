@@ -1,6 +1,6 @@
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Key
 
 
 def hinge_std_loss(x: Float[Array, "B D"], std_margin: float = 1.0) -> Float[Array, ""]:
@@ -61,13 +61,12 @@ def epps_pulley(
 def bcs_loss(
     z1: Float[Array, "B D"],
     z2: Float[Array, "B D"],
+    key: Key[Array, ""],
     num_slices: int = 256,
     lmbd: float = 10.0,
-    step: int = 0,
 ) -> dict[str, Float[Array, ""]]:
     """Batched Characteristic Slicing (BCS) loss for SIGReg."""
     D = z1.shape[1]
-    key = jax.random.key(step)
     A = jax.random.normal(key, (D, num_slices))
     A = A / jnp.linalg.norm(A, axis=0, keepdims=True)
 

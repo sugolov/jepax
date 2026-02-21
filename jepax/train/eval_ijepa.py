@@ -40,8 +40,11 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
     n_seen = 0
 
     for batch in loader:
-        batch_imgs = batch["image"]
-        batch_labels = batch["label"]
+        if isinstance(batch, dict):
+            batch_imgs = batch["image"]
+            batch_labels = batch["label"]
+        else:
+            batch_imgs, batch_labels = batch
         key, subkey = jax.random.split(key)
 
         if n_concat > 1:

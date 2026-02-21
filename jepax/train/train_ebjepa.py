@@ -268,15 +268,15 @@ def train_ebjepa(
     if shard:
 
         @eqx.filter_jit
-        def step_model(model, opt_state, x1, x2, step):
+        def step_model(model, opt_state, x1, x2, bcs_key):
             @filter_shard_map(
                 mesh=mesh,
                 in_specs=(P(), P("batch"), P("batch"), P()),
                 out_specs=(P(), P(), P()),
             )
-            def sharded_loss_and_grad(model, x1, x2, step):
+            def sharded_loss_and_grad(model, x1, x2, bcs_key):
                 @eqx.filter_value_and_grad(has_aux=True)
-                def local_loss(model, x1, x2, step):
+                def local_loss(model, x1, x2, bcs_key):
                     keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
                     def fwd(k, xi):
@@ -291,17 +291,16 @@ def train_ebjepa(
                         ld = vicreg_loss(z1, z2, loss_cfg.std_coeff, loss_cfg.cov_coeff)
                     else:
                         ld = bcs_loss(
-                            z1, z2, loss_cfg.bcs_num_slices, loss_cfg.bcs_lmbd, step[0]
+                            z1, z2, bcs_key, loss_cfg.bcs_num_slices, loss_cfg.bcs_lmbd
                         )
                     return ld["loss"], ld
 
-                (loss, loss_dict), grads = local_loss(model, x1, x2, step)
+                (loss, loss_dict), grads = local_loss(model, x1, x2, bcs_key)
                 loss = jax.lax.pmean(loss, "batch")
                 grads = jax.lax.pmean(grads, "batch")
                 return loss, grads, loss_dict
 
-            step_arr = jnp.array([step])
-            loss, grads, loss_dict = sharded_loss_and_grad(model, x1, x2, step_arr)
+            loss, grads, loss_dict = sharded_loss_and_grad(model, x1, x2, bcs_key)
             updates, opt_state = optimizer.update(
                 grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
             )
@@ -311,9 +310,9 @@ def train_ebjepa(
     else:
 
         @eqx.filter_jit
-        def step_model(model, opt_state, x1, x2, step):
+        def step_model(model, opt_state, x1, x2, bcs_key):
             @eqx.filter_value_and_grad(has_aux=True)
-            def loss_fn(model, x1, x2, step):
+            def loss_fn(model, x1, x2, bcs_key):
                 keys = jax.random.split(jax.random.key(0), x1.shape[0])
 
                 def fwd(k, xi):
@@ -328,11 +327,11 @@ def train_ebjepa(
                     ld = vicreg_loss(z1, z2, loss_cfg.std_coeff, loss_cfg.cov_coeff)
                 else:
                     ld = bcs_loss(
-                        z1, z2, loss_cfg.bcs_num_slices, loss_cfg.bcs_lmbd, step
+                        z1, z2, bcs_key, loss_cfg.bcs_num_slices, loss_cfg.bcs_lmbd
                     )
                 return ld["loss"], ld
 
-            (loss, loss_dict), grads = loss_fn(model, x1, x2, step)
+            (loss, loss_dict), grads = loss_fn(model, x1, x2, bcs_key)
             updates, opt_state = optimizer.update(
                 grads, opt_state, eqx.filter(model, eqx.is_inexact_array)
             )
@@ -357,7 +356,7 @@ def train_ebjepa(
             v1 = batch["view1"]  # [B, H, W, C]
             v2 = batch["view2"]
 
-            key, k1, k2 = jax.random.split(key, 3)
+            key, k1, k2, bcs_key = jax.random.split(key, 4)
             cjp = aug_cfg.color_jitter_prob
             gsp = aug_cfg.grayscale_prob
             hfp = aug_cfg.hflip_prob
@@ -382,7 +381,7 @@ def train_ebjepa(
 
             step_time = time.time()
             model, opt_state, loss, loss_dict = step_model(
-                model, opt_state, x1, x2, jnp.array(step)
+                model, opt_state, x1, x2, bcs_key
             )
             assert not jnp.isnan(loss), f"NaN loss at step {step}"
             step_time = time.time() - step_time
