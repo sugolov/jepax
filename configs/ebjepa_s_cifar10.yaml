@@ -1,17 +1,17 @@
-# EB-JEPA ViT-B on CIFAR-10
+# EB-JEPA ViT-S on CIFAR-10
 data:
   dataset: cifar10
-  batch_size: 256
+  batch_size: 512
   num_workers: 4
   prefetch_factor: 4
 model:
-  name: ebjepa-b
+  name: ebjepa-s
   patch_size: 8
   seq_len: 16
   num_channels: 3
   p_drop: 0.0
   proj_hidden_dim: 2048
-  proj_output_dim: 2048
+  proj_output_dim: 1024
 train:
   epochs: 300
   lr: 0.3
