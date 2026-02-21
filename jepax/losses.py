@@ -14,7 +14,8 @@ def covariance_loss(x: Float[Array, "B D"]) -> Float[Array, ""]:
     x_centered = x - jnp.mean(x, axis=0, keepdims=True)
     cov = (x_centered.T @ x_centered) / (B - 1)
     mask = 1.0 - jnp.eye(D)
-    return jnp.mean((cov * mask) ** 2)
+    off_diag_sq = (cov * mask) ** 2
+    return jnp.sum(off_diag_sq) / (D * (D - 1))
 
 
 def vicreg_loss(
