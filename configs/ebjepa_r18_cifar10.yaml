@@ -1,22 +1,18 @@
-# EB-JEPA ViT-S on CIFAR-10
+# EB-JEPA ResNet-18 on CIFAR-10
 data:
   dataset: cifar10
-  batch_size: 512
+  batch_size: 256
   num_workers: 4
   prefetch_factor: 4
 model:
-  type: vit
-  num_channels: 3
-  p_drop: 0.0
+  type: resnet
   proj_hidden_dim: 2048
   proj_output_dim: 2048
   proj_norm: bn
-  vit:
-    name: vit-s
-    patch_size: 8
-    seq_len: 16
+  resnet:
+    variant: resnet18
 train:
-  epochs: 100
+  epochs: 300
   lr: 0.3
   start_lr: 3.0e-5
   final_lr: 0.0
@@ -26,8 +22,8 @@ train:
   optimizer: lars
 loss:
   type: vicreg
-  std_coeff: 25.0
-  cov_coeff: 1.0
+  std_coeff: 1.0
+  cov_coeff: 80.0
   # bcs_lmbd: 10.0
   # bcs_num_slices: 256
 aug:
@@ -37,7 +33,7 @@ aug:
   hflip_prob: 0.5
 eval:
   bn_mode: ema
-  interval: 2
+  interval: 10
   epochs: 50
   batch_size: 16384
   train_samples: null
@@ -46,4 +42,4 @@ eval:
   optim: lars
   lr: 0.1
   wd: 0.0
-  modes: [last]
+  modes: [last, last_bn]

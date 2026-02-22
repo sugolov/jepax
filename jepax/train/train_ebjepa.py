@@ -51,28 +51,16 @@ def init_from_config(cfg: EBJEPAConfig, img_size: int, steps_per_epoch: int, key
     train_cfg = cfg.train
     total_steps = train_cfg.epochs * steps_per_epoch
 
-    attn_impl = model_cfg.attn_implementation
-    if attn_impl is not None and attn_impl not in {"cudnn", "xla"}:
-        raise ValueError(
-            f"Unsupported model.attn_implementation={attn_impl!r}. "
-            "Choose 'cudnn', 'xla', or null."
-        )
-
     key, key_model = jax.random.split(key)
     model, embed_dim = get_ebjepa_model(
-        model_cfg.name,
+        model_cfg,
         key=key_model,
         img_size=img_size,
-        patch_size=model_cfg.patch_size,
-        seq_len=model_cfg.seq_len,
-        num_channels=model_cfg.num_channels,
-        p_drop=model_cfg.p_drop,
-        proj_hidden_dim=model_cfg.proj_hidden_dim,
-        proj_output_dim=model_cfg.proj_output_dim,
-        proj_norm=model_cfg.proj_norm,
         gradient_checkpointing=train_cfg.gradient_checkpointing,
-        attn_implementation=attn_impl,
     )
+
+    n_params = sum(p.size for p in jax.tree.leaves(eqx.filter(model, eqx.is_array)))
+    print(f"Model parameters: {n_params:,} ({n_params / 1e6:.1f}M)")
 
     use_bn = model_cfg.proj_norm == "bn"
     bn_state = eqx.nn.State(model) if use_bn else None
@@ -212,7 +200,11 @@ def train_ebjepa(
 
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
-    run_name = f"{exp_name}-{model_cfg.name}-{loss_cfg.type}-{data_cfg.dataset.lower()}"
+    if model_cfg.type == "resnet":
+        backbone_name = model_cfg.resnet.variant
+    else:
+        backbone_name = model_cfg.vit.name
+    run_name = f"{exp_name}-{backbone_name}-{loss_cfg.type}-{data_cfg.dataset.lower()}"
     if bfloat16:
         run_name += "-bf16"
     if tag:

@@ -1,26 +1,13 @@
-"""EB-JEPA: Energy-Based JEPA model.
-
-SimCLR-style SSL: two augmented views -> shared ViT encoder -> projector MLP
-"""
-
-from typing import Optional
+"""EB-JEPA: Energy-Based JEPA model."""
 
 import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Key
 
+from jepax.config import EBJEPAModelConfig
 from jepax.model.ijepa import get_encoder_config, IJEPAEncoder
-
-
-ebjepa_configs = {
-    "ebjepa-ti": {"encoder": "vit-ti", "proj_hidden": 2048, "proj_output": 2048},
-    "ebjepa-s": {"encoder": "vit-s", "proj_hidden": 2048, "proj_output": 2048},
-    "ebjepa-b": {"encoder": "vit-b", "proj_hidden": 2048, "proj_output": 2048},
-    "ebjepa-l": {"encoder": "vit-l", "proj_hidden": 2048, "proj_output": 2048},
-    "ebjepa-h": {"encoder": "vit-h", "proj_hidden": 2048, "proj_output": 2048},
-    "ebjepa-test": {"encoder": "test", "proj_hidden": 64, "proj_output": 64},
-}
+from jepax.model.resnet import build_resnet_backbone
 
 
 class Projector(eqx.Module):
@@ -87,7 +74,9 @@ class EBEncoder(eqx.Module):
     norm: eqx.nn.LayerNorm
 
     def __call__(self, key, x, mask=None, train=True, get_intermediates=False):
-        result = self.encoder(key, x, mask=mask, train=train, get_intermediates=get_intermediates)
+        result = self.encoder(
+            key, x, mask=mask, train=train, get_intermediates=get_intermediates
+        )
         if get_intermediates:
             out, intermediates, indices, n_keep = result
             out = jax.vmap(self.norm)(out)
@@ -98,7 +87,7 @@ class EBEncoder(eqx.Module):
 
 
 class EBJEPA(eqx.Module):
-    encoder: EBEncoder
+    encoder: eqx.Module
     projector: Projector
 
     def __call__(
@@ -116,49 +105,39 @@ class EBJEPA(eqx.Module):
 
 
 def get_ebjepa_model(
-    name: str,
+    model_cfg: EBJEPAModelConfig,
     *,
     key: Key[Array, ""],
     img_size: int = 32,
-    patch_size: int = 8,
-    seq_len: int = 16,
-    num_channels: int = 3,
-    p_drop: float = 0.0,
-    proj_hidden_dim: int | None = None,
-    proj_output_dim: int | None = None,
-    proj_norm: str = "bn",
     gradient_checkpointing: bool = False,
-    attn_implementation: Optional[str] = None,
 ) -> tuple[EBJEPA, int]:
     """Create an EB-JEPA model. Returns (model, embed_dim)."""
-    if name not in ebjepa_configs:
-        raise ValueError(
-            f"Unknown EB-JEPA config: {name}. Choose from {list(ebjepa_configs.keys())}"
-        )
-    cfg = ebjepa_configs[name]
-    enc_name = cfg["encoder"]
-    ph = proj_hidden_dim or cfg["proj_hidden"]
-    po = proj_output_dim or cfg["proj_output"]
-
     k1, k2 = jax.random.split(key)
 
-    enc_config = get_encoder_config(
-        enc_name,
-        num_channels=num_channels,
-        patch_size=patch_size,
-        img_size=img_size,
-        p_drop=p_drop,
-        seq_len=seq_len,
-    )
+    if model_cfg.type == "resnet":
+        encoder, embed_dim = build_resnet_backbone(model_cfg.resnet.variant, key=k1)
+    else:
+        vit_cfg = model_cfg.vit
+        enc_config = get_encoder_config(
+            vit_cfg.name,
+            num_channels=model_cfg.num_channels,
+            patch_size=vit_cfg.patch_size,
+            img_size=img_size,
+            p_drop=model_cfg.p_drop,
+            seq_len=vit_cfg.seq_len,
+        )
+        ijepa_encoder = IJEPAEncoder(
+            **enc_config,
+            gradient_checkpointing=gradient_checkpointing,
+            attn_implementation=vit_cfg.attn_implementation,
+            key=k1,
+        )
+        norm = eqx.nn.LayerNorm(enc_config["dim"])
+        encoder = EBEncoder(encoder=ijepa_encoder, norm=norm)
+        embed_dim = enc_config["dim"]
 
-    ijepa_encoder = IJEPAEncoder(
-        **enc_config,
-        gradient_checkpointing=gradient_checkpointing,
-        attn_implementation=attn_implementation,
-        key=k1,
-    )
-    norm = eqx.nn.LayerNorm(enc_config["dim"])
-    encoder = EBEncoder(encoder=ijepa_encoder, norm=norm)
-    projector = Projector(enc_config["dim"], ph, po, key=k2, norm_type=proj_norm)
+    ph = model_cfg.proj_hidden_dim
+    po = model_cfg.proj_output_dim
+    projector = Projector(embed_dim, ph, po, key=k2, norm_type=model_cfg.proj_norm)
     model = EBJEPA(encoder=encoder, projector=projector)
-    return model, enc_config["dim"]
+    return model, embed_dim

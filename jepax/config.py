@@ -78,16 +78,28 @@ def load_ijepa_config(path: str) -> IJEPAConfig:
 
 
 @dataclass
-class EBJEPAModelConfig:
-    name: str = "ebjepa-b"
+class ViTBackboneConfig:
+    name: str = "vit-s"
     patch_size: int = 8
     seq_len: int = 16
+    attn_implementation: str | None = None
+
+
+@dataclass
+class ResNetBackboneConfig:
+    variant: str = "resnet18"
+
+
+@dataclass
+class EBJEPAModelConfig:
+    type: str = "vit"
     num_channels: int = 3
     p_drop: float = 0.0
     proj_hidden_dim: int = 2048
     proj_output_dim: int = 2048
     proj_norm: str = "bn"  # "bn", "ln", or "none"
-    attn_implementation: str | None = None
+    vit: ViTBackboneConfig = field(default_factory=ViTBackboneConfig)
+    resnet: ResNetBackboneConfig = field(default_factory=ResNetBackboneConfig)
 
 
 @dataclass

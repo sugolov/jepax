@@ -1,4 +1,4 @@
-from jepax.model.ebjepa import EBJEPA, ebjepa_configs, get_ebjepa_model, Projector
+from jepax.model.ebjepa import EBJEPA, get_ebjepa_model, Projector
 from jepax.model.ijepa import (
     get_encoder_config,
     get_ijepa_config,
@@ -9,6 +9,7 @@ from jepax.model.ijepa import (
     IJEPAPredictor,
 )
 from jepax.model.masker import IJEPAMasker
+from jepax.model.resnet import build_resnet_backbone, ResNetBackbone
 from jepax.model.transformer import (
     Attention,
     FeedForward,
@@ -51,5 +52,6 @@ __all__ = [
     "EBJEPA",
     "Projector",
     "get_ebjepa_model",
-    "ebjepa_configs",
+    "ResNetBackbone",
+    "build_resnet_backbone",
 ]
