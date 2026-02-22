@@ -8,6 +8,17 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
+DATASET_STATS = {
+    "CIFAR10": ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    "CIFAR100": ((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+    "IMAGENET": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+}
+
+
+def get_normalize_stats(dataset_name: str):
+    return DATASET_STATS.get(dataset_name.upper())
+
+
 def _worker_init_fn(_):
     import os
 
@@ -199,9 +210,18 @@ def build_torch_dataloader(
 ):
     dataset_name = dataset_name.upper()
 
+    norm_key = dataset_name if dataset_name in DATASET_STATS else None
+    if norm_key is None and dataset_name in ["CIFAR", "CIFAR100"]:
+        norm_key = "CIFAR100"
+    elif norm_key is None and dataset_name in ["IMAGENET", "IMNET"]:
+        norm_key = "IMAGENET"
+    norm_transform = (
+        [transforms.Normalize(*DATASET_STATS[norm_key])] if norm_key else []
+    )
+
     if dataset_name in ["CIFAR10", "CIFAR", "CIFAR100"]:
         image_size = 32
-        transform = transforms.Compose([transforms.ToTensor()])
+        transform = transforms.Compose([transforms.ToTensor()] + norm_transform)
     elif dataset_name in ["IMAGENET", "IMNET"]:
         image_size = 224
         if is_train:
@@ -211,6 +231,7 @@ def build_torch_dataloader(
                     transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
                 ]
+                + norm_transform
             )
         else:
             transform = transforms.Compose(
@@ -219,6 +240,7 @@ def build_torch_dataloader(
                     transforms.CenterCrop(image_size),
                     transforms.ToTensor(),
                 ]
+                + norm_transform
             )
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")

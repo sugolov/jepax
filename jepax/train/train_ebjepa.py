@@ -22,7 +22,7 @@ except ImportError:
 from jepax.config import EBJEPAConfig, load_ebjepa_config
 from jepax.data import build_torch_dataloader
 from jepax.data.augmentations import augment_batch
-from jepax.data.dataset import build_two_view_dataloader
+from jepax.data.dataset import build_two_view_dataloader, get_normalize_stats
 from jepax.losses import bcs_loss, vicreg_loss
 from jepax.model.ebjepa import get_ebjepa_model
 from jepax.train.eval_ijepa import evaluate_linear_probe
@@ -217,6 +217,15 @@ def train_ebjepa(
         run_name += "-bf16"
     if tag:
         run_name = f"{run_name}-{tag}"
+
+    norm_stats = get_normalize_stats(data_cfg.dataset)
+    if norm_stats is not None:
+        norm_mean = jnp.array(norm_stats[0])
+        norm_std = jnp.array(norm_stats[1])
+        print(f"Using dataset normalization: mean={norm_stats[0]}, std={norm_stats[1]}")
+    else:
+        norm_mean = None
+        norm_std = None
 
     logf = open(f"{save_dir}/{run_name}_log.txt", "w")
     logf.write("epoch,step,loss,invariance,var,cov,step_ms\n")
@@ -415,6 +424,10 @@ def train_ebjepa(
             hfp = aug_cfg.hflip_prob
             v1 = augment_batch(k1, v1, cjp, gsp, hfp)
             v2 = augment_batch(k2, v2, cjp, gsp, hfp)
+
+            if norm_mean is not None:
+                v1 = (v1 - norm_mean) / norm_std
+                v2 = (v2 - norm_mean) / norm_std
 
             # Transpose HWC -> CHW for model
             x1 = jnp.transpose(v1, (0, 3, 1, 2))
