@@ -130,6 +130,7 @@ class AugConfig:
     color_jitter_prob: float = 0.8
     grayscale_prob: float = 0.2
     hflip_prob: float = 0.5
+    solarize_prob: float = 0.0
 
 
 @dataclass

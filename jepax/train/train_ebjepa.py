@@ -414,8 +414,9 @@ def train_ebjepa(
             cjp = aug_cfg.color_jitter_prob
             gsp = aug_cfg.grayscale_prob
             hfp = aug_cfg.hflip_prob
-            v1 = augment_batch(k1, v1, cjp, gsp, hfp)
-            v2 = augment_batch(k2, v2, cjp, gsp, hfp)
+            sp = aug_cfg.solarize_prob
+            v1 = augment_batch(k1, v1, cjp, gsp, hfp, sp)
+            v2 = augment_batch(k2, v2, cjp, gsp, hfp, sp)
 
             if norm_mean is not None:
                 v1 = (v1 - norm_mean) / norm_std

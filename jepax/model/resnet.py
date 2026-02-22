@@ -113,7 +113,7 @@ class ResNet(eqx.Module):
     conv1: eqx.nn.Conv2d
     norm1: eqx.Module
     relu: Callable
-    maxpool: eqx.nn.MaxPool2d
+    maxpool: eqx.Module
     layer1: eqx.nn.Sequential
     layer2: eqx.nn.Sequential
     layer3: eqx.nn.Sequential
@@ -128,6 +128,7 @@ class ResNet(eqx.Module):
         num_classes: int = 1,
         groups: int = 1,
         norm_layer: Optional[Callable] = None,
+        small_input: bool = False,
         key: Optional[Key[Array, ""]] = None,
     ) -> None:
         if key is None:
@@ -136,20 +137,22 @@ class ResNet(eqx.Module):
         self.inplanes = 64
         self.dilation = 1
         self.groups = groups
-        self.conv1 = eqx.nn.Conv2d(
-            3,
-            self.inplanes,
-            kernel_size=7,
-            stride=2,
-            padding=3,
-            use_bias=False,
-            key=keys[0],
-        )
+        if small_input:
+            self.conv1 = eqx.nn.Conv2d(
+                3, self.inplanes, kernel_size=3, stride=1, padding=2,
+                use_bias=False, key=keys[0],
+            )
+            self.maxpool = eqx.nn.Identity()
+        else:
+            self.conv1 = eqx.nn.Conv2d(
+                3, self.inplanes, kernel_size=7, stride=2, padding=3,
+                use_bias=False, key=keys[0],
+            )
+            self.maxpool = eqx.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         if norm_layer is None:
             norm_layer = eqx.nn.Identity
         self.norm1 = norm_layer(self.inplanes)
         self.relu = jax.nn.relu
-        self.maxpool = eqx.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0], norm_layer, key=keys[1])
         self.layer2 = self._make_layer(
             block, 128, layers[1], norm_layer, stride=2, key=keys[2]
@@ -245,6 +248,7 @@ def build_resnet_backbone(
     variant: str = "resnet18",
     *,
     key: Key[Array, ""],
+    small_input: bool = False,
 ) -> tuple[ResNetBackbone, int]:
     if variant == "resnet18":
         make_fn = resnet18
@@ -256,5 +260,5 @@ def build_resnet_backbone(
     def gn(channels):
         return eqx.nn.GroupNorm(min(32, channels), channels)
 
-    resnet = make_fn(num_classes=1, norm_layer=gn, key=key)
+    resnet = make_fn(num_classes=1, norm_layer=gn, small_input=small_input, key=key)
     return ResNetBackbone(resnet=resnet), 512

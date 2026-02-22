@@ -32,7 +32,7 @@ class Projector(eqx.Module):
         k1, k2, k3 = jax.random.split(key, 3)
         self.linear1 = eqx.nn.Linear(in_dim, hidden_dim, key=k1)
         self.linear2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=k2)
-        self.linear3 = eqx.nn.Linear(hidden_dim, out_dim, use_bias=False, key=k3)
+        self.linear3 = eqx.nn.Linear(hidden_dim, out_dim, key=k3)
         self.norm_type = norm_type
 
         if norm_type == "bn":
@@ -115,7 +115,9 @@ def get_ebjepa_model(
     k1, k2 = jax.random.split(key)
 
     if model_cfg.type == "resnet":
-        encoder, embed_dim = build_resnet_backbone(model_cfg.resnet.variant, key=k1)
+        encoder, embed_dim = build_resnet_backbone(
+            model_cfg.resnet.variant, key=k1, small_input=(img_size <= 64),
+        )
     else:
         vit_cfg = model_cfg.vit
         enc_config = get_encoder_config(

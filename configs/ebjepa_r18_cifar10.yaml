@@ -31,6 +31,7 @@ aug:
   color_jitter_prob: 0.8
   grayscale_prob: 0.2
   hflip_prob: 0.5
+  solarize_prob: 0.1
 eval:
   bn_mode: ema
   interval: 10
