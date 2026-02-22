@@ -7,7 +7,9 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Key
 
+
 # from eqxvision
+
 
 def _convnxn(
     in_planes: int,
@@ -151,14 +153,24 @@ class ResNet(eqx.Module):
         self.groups = groups
         if small_input:
             self.conv1 = eqx.nn.Conv2d(
-                3, self.inplanes, kernel_size=3, stride=1, padding=2,
-                use_bias=False, key=keys[0],
+                3,
+                self.inplanes,
+                kernel_size=3,
+                stride=1,
+                padding=2,
+                use_bias=False,
+                key=keys[0],
             )
             self.maxpool = eqx.nn.Identity()
         else:
             self.conv1 = eqx.nn.Conv2d(
-                3, self.inplanes, kernel_size=7, stride=2, padding=3,
-                use_bias=False, key=keys[0],
+                3,
+                self.inplanes,
+                kernel_size=7,
+                stride=2,
+                padding=3,
+                use_bias=False,
+                key=keys[0],
             )
             self.maxpool = eqx.nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         if norm_layer is None:
@@ -188,9 +200,14 @@ class ResNet(eqx.Module):
             ds_norm = norm_layer(planes)
         layer_list = [
             block(
-                self.inplanes, planes, stride,
-                ds_conv, ds_norm,
-                self.groups, self.dilation, norm_layer,
+                self.inplanes,
+                planes,
+                stride,
+                ds_conv,
+                ds_norm,
+                self.groups,
+                self.dilation,
+                norm_layer,
                 key=keys[1],
             )
         ]
@@ -198,9 +215,12 @@ class ResNet(eqx.Module):
         for i in range(1, blocks):
             layer_list.append(
                 block(
-                    self.inplanes, planes,
-                    groups=self.groups, dilation=self.dilation,
-                    norm_layer=norm_layer, key=keys[i + 1],
+                    self.inplanes,
+                    planes,
+                    groups=self.groups,
+                    dilation=self.dilation,
+                    norm_layer=norm_layer,
+                    key=keys[i + 1],
                 )
             )
         return tuple(layer_list)

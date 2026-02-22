@@ -9,7 +9,11 @@ def solarize(img, threshold=0.5):
 
 
 def augment_image(
-    rng, img, color_jitter_prob=0.8, grayscale_prob=0.2, hflip_prob=0.5,
+    rng,
+    img,
+    color_jitter_prob=0.8,
+    grayscale_prob=0.2,
+    hflip_prob=0.5,
     solarize_prob=0.0,
 ):
     k1, k2, k3, k4, k5, k6, k7, k8 = jax.random.split(rng, 8)
@@ -42,14 +46,23 @@ def augment_image(
 
 @eqx.filter_jit
 def augment_batch(
-    rng, images, color_jitter_prob=0.8, grayscale_prob=0.2, hflip_prob=0.5,
+    rng,
+    images,
+    color_jitter_prob=0.8,
+    grayscale_prob=0.2,
+    hflip_prob=0.5,
     solarize_prob=0.0,
 ):
     keys = jax.random.split(rng, images.shape[0])
 
     def aug(k, img):
         return augment_image(
-            k, img, color_jitter_prob, grayscale_prob, hflip_prob, solarize_prob,
+            k,
+            img,
+            color_jitter_prob,
+            grayscale_prob,
+            hflip_prob,
+            solarize_prob,
         )
 
     return jax.vmap(aug)(keys, images)

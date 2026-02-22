@@ -36,11 +36,11 @@ eval:
   bn_mode: ema
   interval: 2
   epochs: 50
-  batch_size: 16384
+  batch_size: 256
   train_samples: null
   val_samples: null
   n_concat: 1
   optim: lars
   lr: 0.1
-  wd: 0.0
+  wd: 1.0e-4
   modes: [last]

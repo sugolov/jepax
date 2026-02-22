@@ -107,6 +107,8 @@ def _train_probe_paper(
     weight_decay=0.0,
     use_bn=False,
     bn_mode="ema",
+    lars_trust_coefficient=None,
+    warmup_epochs=0,
 ):
     key, init_key = jax.random.split(key)
 
@@ -118,8 +120,26 @@ def _train_probe_paper(
         probe = LinearProbe(input_dim, num_classes, key=init_key)
         state = None
 
+    n_train = len(train_feats)
+    steps_per_epoch = n_train // batch_size + (1 if n_train % batch_size > 1 else 0)
+    total_steps = n_epochs * steps_per_epoch
+
     if optim.lower() == "lars":
-        optimizer = optax.lars(lr, weight_decay=weight_decay)
+        lars_kwargs = {}
+        if lars_trust_coefficient is not None:
+            lars_kwargs["trust_coefficient"] = lars_trust_coefficient
+        if warmup_epochs > 0:
+            warmup_steps = min(warmup_epochs, n_epochs) * steps_per_epoch
+            learning_rate = optax.warmup_cosine_decay_schedule(
+                init_value=0.0,
+                peak_value=lr,
+                end_value=0.0,
+                warmup_steps=warmup_steps,
+                decay_steps=total_steps,
+            )
+        else:
+            learning_rate = lr
+        optimizer = optax.lars(learning_rate, weight_decay=weight_decay, **lars_kwargs)
     elif optim.lower() in ["adam", "adamw"]:
         optimizer = optax.adamw(lr, weight_decay=weight_decay)
     else:
@@ -162,7 +182,6 @@ def _train_probe_paper(
         probe = eqx.apply_updates(probe, updates)
         return probe, opt_state, loss
 
-    n_train = len(train_feats)
     for _ in range(n_epochs):
         perm = np.random.permutation(n_train)
         for i in range(0, n_train, batch_size):
@@ -214,6 +233,8 @@ def evaluate_linear_probe(
     max_val_samples=None,
     verbose=True,
     modes=None,
+    lars_trust_coefficient=None,
+    warmup_epochs=0,
 ):
     """Evaluate linear probe across configurations.
 
@@ -279,6 +300,8 @@ def evaluate_linear_probe(
             weight_decay,
             use_bn,
             bn_mode,
+            lars_trust_coefficient=lars_trust_coefficient,
+            warmup_epochs=warmup_epochs,
         )
         results[f"{name}_top1"] = t1
         results[f"{name}_top5"] = t5

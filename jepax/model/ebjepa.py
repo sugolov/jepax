@@ -7,12 +7,10 @@ from jaxtyping import Array, Float, Key
 
 from jepax.config import EBJEPAModelConfig
 from jepax.model.ijepa import get_encoder_config, IJEPAEncoder
-from jepax.model.resnet import build_resnet_backbone, ResNetBackbone
+from jepax.model.resnet import build_resnet_backbone
 
 
 class Projector(eqx.Module):
-    """3-layer MLP projector with optional normalization."""
-
     linear1: eqx.nn.Linear
     norm1: eqx.Module | None
     linear2: eqx.nn.Linear
@@ -119,7 +117,9 @@ def get_ebjepa_model(
     uses_resnet = model_cfg.type == "resnet"
     if uses_resnet:
         encoder, embed_dim = build_resnet_backbone(
-            model_cfg.resnet.variant, key=k1, small_input=(img_size <= 64),
+            model_cfg.resnet.variant,
+            key=k1,
+            small_input=(img_size <= 64),
         )
     else:
         vit_cfg = model_cfg.vit

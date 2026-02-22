@@ -158,6 +158,8 @@ def eval_probe(
         weight_decay=cfg_eval.wd,
         bn_mode=getattr(cfg_eval, "bn_mode", "ema"),
         modes=getattr(cfg_eval, "modes", None) or ["last", "last_bn"],
+        lars_trust_coefficient=0.02,
+        warmup_epochs=10,
     )
     log_result = {k: v for k, v in eval_result.items() if k not in ("top1", "top5")}
     return eval_result, log_result
