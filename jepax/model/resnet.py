@@ -266,7 +266,7 @@ def build_resnet_backbone(
         raise ValueError(f"Unknown resnet variant: {variant}")
 
     def bn(channels):
-        return eqx.nn.BatchNorm(channels, axis_name="batch", mode="batch")
+        return eqx.nn.BatchNorm(channels, axis_name="batch", mode="batch", momentum=0.9)
 
     resnet = make_fn(num_classes=1, norm_layer=bn, small_input=small_input, key=key)
     return ResNetBackbone(resnet=resnet), 512
