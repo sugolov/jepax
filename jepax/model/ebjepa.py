@@ -7,7 +7,7 @@ from jaxtyping import Array, Float, Key
 
 from jepax.config import EBJEPAModelConfig
 from jepax.model.ijepa import get_encoder_config, IJEPAEncoder
-from jepax.model.resnet import build_resnet_backbone
+from jepax.model.resnet import build_resnet_backbone, ResNetBackbone
 
 
 class Projector(eqx.Module):
@@ -49,19 +49,17 @@ class Projector(eqx.Module):
         self,
         x: Float[Array, " D"],
         state: eqx.nn.State | None = None,
-        *,
-        inference: bool = False,
     ) -> tuple[Float[Array, " P"], eqx.nn.State | None]:
         x = self.linear1(x)
         if self.norm_type == "bn" and self.norm1 is not None:
-            x, state = self.norm1(x, state, inference=inference)
+            x, state = self.norm1(x, state)
         elif self.norm_type == "ln" and self.norm1 is not None:
             x = self.norm1(x)
         x = jax.nn.relu(x)
 
         x = self.linear2(x)
         if self.norm_type == "bn" and self.norm2 is not None:
-            x, state = self.norm2(x, state, inference=inference)
+            x, state = self.norm2(x, state)
         elif self.norm_type == "ln" and self.norm2 is not None:
             x = self.norm2(x)
         x = jax.nn.relu(x)
@@ -89,6 +87,7 @@ class EBEncoder(eqx.Module):
 class EBJEPA(eqx.Module):
     encoder: eqx.Module
     projector: Projector
+    uses_resnet: bool = eqx.field(static=True)
 
     def __call__(
         self,
@@ -98,9 +97,12 @@ class EBJEPA(eqx.Module):
         *,
         train: bool = True,
     ) -> tuple[Float[Array, " D"], Float[Array, " P"], eqx.nn.State | None]:
-        out, _, _ = self.encoder(key, x, mask=None, train=train)
+        if self.uses_resnet:
+            out, state = self.encoder(key, x, state)
+        else:
+            out, _, _ = self.encoder(key, x, mask=None, train=train)
         features = jnp.mean(out, axis=0)  # [N_patches, D] -> [D]
-        projections, state = self.projector(features, state, inference=not train)
+        projections, state = self.projector(features, state)
         return features, projections, state
 
 
@@ -114,7 +116,8 @@ def get_ebjepa_model(
     """Create an EB-JEPA model. Returns (model, embed_dim)."""
     k1, k2 = jax.random.split(key)
 
-    if model_cfg.type == "resnet":
+    uses_resnet = model_cfg.type == "resnet"
+    if uses_resnet:
         encoder, embed_dim = build_resnet_backbone(
             model_cfg.resnet.variant, key=k1, small_input=(img_size <= 64),
         )
@@ -141,5 +144,5 @@ def get_ebjepa_model(
     ph = model_cfg.proj_hidden_dim
     po = model_cfg.proj_output_dim
     projector = Projector(embed_dim, ph, po, key=k2, norm_type=model_cfg.proj_norm)
-    model = EBJEPA(encoder=encoder, projector=projector)
+    model = EBJEPA(encoder=encoder, projector=projector, uses_resnet=uses_resnet)
     return model, embed_dim

@@ -25,6 +25,7 @@ from jepax.data.augmentations import augment_batch
 from jepax.data.dataset import build_two_view_dataloader, get_normalize_stats
 from jepax.losses import bcs_loss, vicreg_loss
 from jepax.model.ebjepa import get_ebjepa_model
+from jepax.model.resnet import InferenceResNet
 from jepax.train.eval_ijepa import evaluate_linear_probe
 from jepax.utils import filter_shard_map
 
@@ -62,8 +63,8 @@ def init_from_config(cfg: EBJEPAConfig, img_size: int, steps_per_epoch: int, key
     n_params = sum(p.size for p in jax.tree.leaves(eqx.filter(model, eqx.is_array)))
     print(f"Model parameters: {n_params:,} ({n_params / 1e6:.1f}M)")
 
-    use_bn = model_cfg.proj_norm == "bn"
-    bn_state = eqx.nn.State(model) if use_bn else None
+    has_stateful = model_cfg.proj_norm == "bn" or model_cfg.type == "resnet"
+    bn_state = eqx.nn.State(model) if has_stateful else None
 
     lr_schedule = optax.warmup_cosine_decay_schedule(
         init_value=train_cfg.start_lr,
@@ -494,8 +495,15 @@ def train_ebjepa(
             probe_time = time.time()
             key, eval_key = jax.random.split(key)
             print("Running linear probe evaluation...")
+            if model.uses_resnet:
+                eval_encoder = InferenceResNet(
+                    backbone=eqx.nn.inference_mode(model.encoder),
+                    state=bn_state,
+                )
+            else:
+                eval_encoder = model.encoder
             eval_result, log_result = eval_probe(
-                encoder=model.encoder,
+                encoder=eval_encoder,
                 embed_dim=embed_dim,
                 train_loader=train_eval_loader,
                 val_loader=val_loader,

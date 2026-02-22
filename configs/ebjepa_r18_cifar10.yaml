@@ -34,7 +34,7 @@ aug:
   solarize_prob: 0.1
 eval:
   bn_mode: ema
-  interval: 10
+  interval: 2
   epochs: 50
   batch_size: 16384
   train_samples: null
@@ -43,4 +43,4 @@ eval:
   optim: lars
   lr: 0.1
   wd: 0.0
-  modes: [last, last_bn]
+  modes: [last]

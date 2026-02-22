@@ -9,7 +9,7 @@ from jepax.model.ijepa import (
     IJEPAPredictor,
 )
 from jepax.model.masker import IJEPAMasker
-from jepax.model.resnet import build_resnet_backbone, ResNetBackbone
+from jepax.model.resnet import build_resnet_backbone, InferenceResNet, ResNetBackbone
 from jepax.model.transformer import (
     Attention,
     FeedForward,
@@ -53,5 +53,6 @@ __all__ = [
     "Projector",
     "get_ebjepa_model",
     "ResNetBackbone",
+    "InferenceResNet",
     "build_resnet_backbone",
 ]

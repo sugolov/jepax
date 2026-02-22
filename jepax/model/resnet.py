@@ -7,9 +7,7 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Key
 
-
 # from eqxvision
-
 
 def _convnxn(
     in_planes: int,
@@ -55,13 +53,22 @@ def _convnxn_no_pad(
     )
 
 
+def _apply_norm(norm, x, state):
+    if isinstance(norm, eqx.nn.BatchNorm):
+        return norm(x, state)
+    if isinstance(norm, eqx.nn.Identity):
+        return x, state
+    return norm(x), state
+
+
 class _BasicBlock(eqx.Module):
     conv1: eqx.nn.Conv2d
     norm1: eqx.Module
-    relu: Callable
     conv2: eqx.nn.Conv2d
     norm2: eqx.Module
-    downsample: eqx.Module
+    has_downsample: bool = eqx.field(static=True)
+    ds_conv: eqx.nn.Conv2d | None
+    ds_norm: eqx.Module | None
     stride: int
 
     def __init__(
@@ -69,7 +76,8 @@ class _BasicBlock(eqx.Module):
         inplanes: int,
         planes: int,
         stride: int = 1,
-        downsample: Optional[eqx.Module] = None,
+        downsample_conv: Optional[eqx.nn.Conv2d] = None,
+        downsample_norm: Optional[eqx.Module] = None,
         groups: int = 1,
         dilation: int = 1,
         norm_layer: Optional[Callable] = None,
@@ -89,21 +97,26 @@ class _BasicBlock(eqx.Module):
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         keys = jax.random.split(key, 2)
         self.conv1 = _convnxn(inplanes, planes, 3, stride, key=keys[0])
-        self.relu = jax.nn.relu
         self.conv2 = _convnxn(planes, planes, 3, key=keys[1])
-        self.downsample = downsample if downsample else eqx.nn.Identity()
+        self.has_downsample = downsample_conv is not None
+        self.ds_conv = downsample_conv
+        self.ds_norm = downsample_norm
         self.stride = stride
 
-    def __call__(self, x, key=None):
+    def __call__(self, x, state):
         out = self.conv1(x)
-        out = self.norm1(out)
-        out = self.relu(out)
+        out, state = _apply_norm(self.norm1, out, state)
+        out = jax.nn.relu(out)
         out = self.conv2(out)
-        out = self.norm2(out)
-        identity = self.downsample(x)
+        out, state = _apply_norm(self.norm2, out, state)
+        if self.has_downsample:
+            identity = self.ds_conv(x)
+            identity, state = _apply_norm(self.ds_norm, identity, state)
+        else:
+            identity = x
         out += identity
-        out = self.relu(out)
-        return out
+        out = jax.nn.relu(out)
+        return out, state
 
 
 class ResNet(eqx.Module):
@@ -112,12 +125,11 @@ class ResNet(eqx.Module):
     groups: int
     conv1: eqx.nn.Conv2d
     norm1: eqx.Module
-    relu: Callable
     maxpool: eqx.Module
-    layer1: eqx.nn.Sequential
-    layer2: eqx.nn.Sequential
-    layer3: eqx.nn.Sequential
-    layer4: eqx.nn.Sequential
+    layer1: tuple
+    layer2: tuple
+    layer3: tuple
+    layer4: tuple
     avgpool: eqx.nn.AdaptiveAvgPool2d
     fc: eqx.nn.Linear
 
@@ -152,7 +164,6 @@ class ResNet(eqx.Module):
         if norm_layer is None:
             norm_layer = eqx.nn.Identity
         self.norm1 = norm_layer(self.inplanes)
-        self.relu = jax.nn.relu
         self.layer1 = self._make_layer(block, 64, layers[0], norm_layer, key=keys[1])
         self.layer2 = self._make_layer(
             block, 128, layers[1], norm_layer, stride=2, key=keys[2]
@@ -170,59 +181,49 @@ class ResNet(eqx.Module):
         if key is None:
             raise ValueError("key must be specified")
         keys = jax.random.split(key, blocks + 1)
-        downsample = None
+        ds_conv = None
+        ds_norm = None
         if stride != 1 or self.inplanes != planes:
-            downsample = eqx.nn.Sequential(
-                [
-                    _convnxn_no_pad(self.inplanes, planes, 1, stride, key=keys[0]),
-                    norm_layer(planes),
-                ]
-            )
-        layers = [
+            ds_conv = _convnxn_no_pad(self.inplanes, planes, 1, stride, key=keys[0])
+            ds_norm = norm_layer(planes)
+        layer_list = [
             block(
-                self.inplanes,
-                planes,
-                stride,
-                downsample,
-                self.groups,
-                self.dilation,
-                norm_layer,
+                self.inplanes, planes, stride,
+                ds_conv, ds_norm,
+                self.groups, self.dilation, norm_layer,
                 key=keys[1],
             )
         ]
         self.inplanes = planes
         for i in range(1, blocks):
-            layers.append(
+            layer_list.append(
                 block(
-                    self.inplanes,
-                    planes,
-                    groups=self.groups,
-                    dilation=self.dilation,
-                    norm_layer=norm_layer,
-                    key=keys[i + 1],
+                    self.inplanes, planes,
+                    groups=self.groups, dilation=self.dilation,
+                    norm_layer=norm_layer, key=keys[i + 1],
                 )
             )
-        return eqx.nn.Sequential(layers)
+        return tuple(layer_list)
 
-    def forward_features(self, x, key=None):
-        if key is None:
-            keys = [None] * 5
-        else:
-            keys = jax.random.split(key, 5)
-        x = self.conv1(x, key=keys[0])
-        x = self.norm1(x)
-        x = self.relu(x)
+    def forward_features(self, x, state):
+        x = self.conv1(x)
+        x, state = _apply_norm(self.norm1, x, state)
+        x = jax.nn.relu(x)
         x = self.maxpool(x)
-        x = self.layer1(x, key=keys[1])
-        x = self.layer2(x, key=keys[2])
-        x = self.layer3(x, key=keys[3])
-        x = self.layer4(x, key=keys[4])
+        for block in self.layer1:
+            x, state = block(x, state)
+        for block in self.layer2:
+            x, state = block(x, state)
+        for block in self.layer3:
+            x, state = block(x, state)
+        for block in self.layer4:
+            x, state = block(x, state)
         x = self.avgpool(x)
-        return jnp.ravel(x)
+        return jnp.ravel(x), state
 
-    def __call__(self, x, key=None):
-        features = self.forward_features(x, key=key)
-        return self.fc(features)
+    def __call__(self, x, state):
+        features, state = self.forward_features(x, state)
+        return self.fc(features), state
 
 
 def resnet18(**kwargs) -> ResNet:
@@ -236,12 +237,19 @@ def resnet34(**kwargs) -> ResNet:
 class ResNetBackbone(eqx.Module):
     resnet: ResNet
 
-    def __call__(self, key, x, mask=None, train=True, get_intermediates=False):
-        features = self.resnet.forward_features(x, key=key)
+    def __call__(self, key, x, state):
+        features, state = self.resnet.forward_features(x, state)
         out = features[None, :]  # [1, 512]
-        if get_intermediates:
-            return out, [], jnp.array([0]), 1
-        return out, jnp.array([0]), 1
+        return out, state
+
+
+class InferenceResNet(eqx.Module):
+    backbone: ResNetBackbone
+    state: eqx.nn.State
+
+    def __call__(self, key, x, mask=None, train=False):
+        out, _ = self.backbone(key, x, self.state)
+        return out, None, None
 
 
 def build_resnet_backbone(
@@ -257,8 +265,8 @@ def build_resnet_backbone(
     else:
         raise ValueError(f"Unknown resnet variant: {variant}")
 
-    def gn(channels):
-        return eqx.nn.GroupNorm(min(32, channels), channels)
+    def bn(channels):
+        return eqx.nn.BatchNorm(channels, axis_name="batch", mode="batch")
 
-    resnet = make_fn(num_classes=1, norm_layer=gn, small_input=small_input, key=key)
+    resnet = make_fn(num_classes=1, norm_layer=bn, small_input=small_input, key=key)
     return ResNetBackbone(resnet=resnet), 512
