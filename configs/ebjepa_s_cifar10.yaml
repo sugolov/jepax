@@ -1,7 +1,7 @@
 # EB-JEPA ViT-S on CIFAR-10
 data:
   dataset: cifar10
-  batch_size: 512
+  batch_size: 256
   num_workers: 4
   prefetch_factor: 4
 model:
@@ -16,7 +16,7 @@ model:
     patch_size: 8
     seq_len: 16
 train:
-  epochs: 100
+  epochs: 300
   lr: 0.3
   start_lr: 3.0e-5
   final_lr: 0.0
