@@ -46,17 +46,12 @@ def epps_pulley(
 ) -> Float[Array, " M"]:
     """Epps-Pulley Gaussianity test statistic via characteristic function comparison."""
     t = jnp.linspace(t_min, t_max, n_points)
+    exp_f = jnp.exp(-0.5 * t**2)  # [n_points]
 
-    mu = jnp.mean(x, axis=0, keepdims=True)
-    sigma = jnp.std(x, axis=0, keepdims=True) + 1e-8
-    x_std = (x - mu) / sigma
-
-    tx = t[:, None, None] * x_std[None, :, :]  # [n_points, B, M]
-    emp_cf = jnp.mean(jnp.exp(1j * tx), axis=1)  # [n_points, M]
-    theo_cf = jnp.exp(-0.5 * t**2)[:, None]  # [n_points, 1]
-
-    diff_sq = jnp.abs(emp_cf - theo_cf) ** 2
-    return jnp.trapezoid(diff_sq, t, axis=0)
+    x_t = x[:, :, None] * t[None, None, :]  # [B, M, n_points]
+    ecf = jnp.mean(jnp.exp(1j * x_t), axis=0)  # [M, n_points]
+    err = exp_f[None, :] * jnp.abs(ecf - exp_f[None, :]) ** 2  # [M, n_points]
+    return jnp.trapezoid(err, t, axis=1)  # [M]
 
 
 def bcs_loss(
