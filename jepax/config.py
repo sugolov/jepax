@@ -88,6 +88,7 @@ class ViTBackboneConfig:
 @dataclass
 class ResNetBackboneConfig:
     variant: str = "resnet18"
+    norm: str = "bn"
 
 
 @dataclass

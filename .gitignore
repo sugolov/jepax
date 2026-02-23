@@ -222,3 +222,4 @@ profiles
 wandb/
 .swift-version
 swiftly.pkg
+.vscode

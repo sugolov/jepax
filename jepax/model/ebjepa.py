@@ -118,6 +118,7 @@ def get_ebjepa_model(
     if uses_resnet:
         encoder, embed_dim = build_resnet_backbone(
             model_cfg.resnet.variant,
+            model_cfg.resnet.norm,
             key=k1,
             small_input=(img_size <= 64),
         )
