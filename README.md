@@ -53,6 +53,9 @@ python -m jepax.train.train_ijepa \
 - [ ] Update tests
 - [ ] Pre-trained model weights
 - [ ] Benchmarks against PyTorch implementation
+- [x] [EB-JEPA](https://arxiv.org/abs/2602.03604) Image JEPA
+- [ ] EB-JEPA Video JEPA
+- [ ] EB-JEPA AC Video JEPA (world modeling + planning)
 
 ## Other Resources
 - [Awesome JEPA (list of JEPA papers/code)](https://github.com/lockwo/awesome-jepa)
