@@ -42,7 +42,7 @@ def epps_pulley(
     x: Float[Array, "B M"],
     t_min: float = -3.0,
     t_max: float = 3.0,
-    n_points: int = 10,
+    n_points: int = 20,
 ) -> Float[Array, " M"]:
     """Epps-Pulley Gaussianity test statistic via characteristic function comparison."""
     t = jnp.linspace(t_min, t_max, n_points)
