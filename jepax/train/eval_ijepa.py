@@ -1,11 +1,3 @@
-"""Linear probe evaluation for I-JEPA.
-
-Paper protocol: test (last-layer / concat-4) x (with / without BN), report best.
-Uses LARS with step-wise LR decay (÷10 every 15 epochs) following MAE.
-"""
-
-import gc
-
 import equinox as eqx
 import jax
 import numpy as np
@@ -48,8 +40,13 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
     n_seen = 0
 
     for batch in loader:
-        batch_imgs = batch["image"]
-        batch_labels = batch["label"]
+        if isinstance(batch, dict):
+            batch_imgs = batch["image"]
+            batch_labels = batch["label"]
+        else:
+            batch_imgs, batch_labels = batch
+        if batch_imgs.ndim == 4 and batch_imgs.shape[-1] in (1, 3):
+            batch_imgs = np.transpose(batch_imgs, (0, 3, 1, 2))
         key, subkey = jax.random.split(key)
 
         if n_concat > 1:
@@ -69,7 +66,6 @@ def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
     labels = np.concatenate(labels_list)[:max_samples]
     concat = np.concatenate(concat_list)[:max_samples] if concat_list else None
 
-    gc.collect()
     return last, concat, labels
 
 
@@ -111,6 +107,8 @@ def _train_probe_paper(
     weight_decay=0.0,
     use_bn=False,
     bn_mode="ema",
+    lars_trust_coefficient=None,
+    warmup_epochs=0,
 ):
     key, init_key = jax.random.split(key)
 
@@ -122,8 +120,26 @@ def _train_probe_paper(
         probe = LinearProbe(input_dim, num_classes, key=init_key)
         state = None
 
+    n_train = len(train_feats)
+    steps_per_epoch = n_train // batch_size + (1 if n_train % batch_size > 1 else 0)
+    total_steps = n_epochs * steps_per_epoch
+
     if optim.lower() == "lars":
-        optimizer = optax.lars(lr, weight_decay=weight_decay)
+        lars_kwargs = {}
+        if lars_trust_coefficient is not None:
+            lars_kwargs["trust_coefficient"] = lars_trust_coefficient
+        if warmup_epochs > 0:
+            warmup_steps = min(warmup_epochs, n_epochs) * steps_per_epoch
+            learning_rate = optax.warmup_cosine_decay_schedule(
+                init_value=0.0,
+                peak_value=lr,
+                end_value=0.0,
+                warmup_steps=warmup_steps,
+                decay_steps=total_steps,
+            )
+        else:
+            learning_rate = lr
+        optimizer = optax.lars(learning_rate, weight_decay=weight_decay, **lars_kwargs)
     elif optim.lower() in ["adam", "adamw"]:
         optimizer = optax.adamw(lr, weight_decay=weight_decay)
     else:
@@ -166,7 +182,6 @@ def _train_probe_paper(
         probe = eqx.apply_updates(probe, updates)
         return probe, opt_state, loss
 
-    n_train = len(train_feats)
     for _ in range(n_epochs):
         perm = np.random.permutation(n_train)
         for i in range(0, n_train, batch_size):
@@ -217,20 +232,30 @@ def evaluate_linear_probe(
     max_train_samples=None,
     max_val_samples=None,
     verbose=True,
+    modes=None,
+    lars_trust_coefficient=None,
+    warmup_epochs=0,
 ):
-    """Evaluate linear probe across all configurations."""
+    """Evaluate linear probe across configurations.
+
+    Args:
+        modes: optional list of mode names to run, e.g. ["last", "last_bn"].
+    """
+    need_concat = modes is None or any(m.startswith("concat") for m in (modes or []))
+    use_n_concat = n_concat if need_concat else 1
+
     key, k1, k2 = jax.random.split(key, 3)
 
     if verbose:
         print("Probe: extracting train features")
     train_last, train_concat, train_labels = extract_features(
-        encoder, train_loader, k1, max_train_samples, n_concat
+        encoder, train_loader, k1, max_train_samples, use_n_concat
     )
 
     if verbose:
         print("Probe: extracting val features")
     val_last, val_concat, val_labels = extract_features(
-        encoder, val_loader, k2, max_val_samples, n_concat
+        encoder, val_loader, k2, max_val_samples, use_n_concat
     )
 
     if verbose:
@@ -253,6 +278,9 @@ def evaluate_linear_probe(
             ]
         )
 
+    if modes is not None:
+        configs = [(n, tf, vf, d, bn) for n, tf, vf, d, bn in configs if n in modes]
+
     for name, tr_f, val_f, dim, use_bn in configs:
         if verbose:
             print(f"Probe: training {name}")
@@ -272,6 +300,8 @@ def evaluate_linear_probe(
             weight_decay,
             use_bn,
             bn_mode,
+            lars_trust_coefficient=lars_trust_coefficient,
+            warmup_epochs=warmup_epochs,
         )
         results[f"{name}_top1"] = t1
         results[f"{name}_top5"] = t5

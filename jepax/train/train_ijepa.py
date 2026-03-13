@@ -21,10 +21,12 @@ try:
 except ImportError:
     wandb = None
 
-from jepax.config import Config, load_config
+from jepax.config import IJEPAConfig, load_ijepa_config
 from jepax.data import build_dataloader
+from jepax.losses import smooth_l1_loss
 from jepax.model import get_ijepa_model, IJEPAMasker
 from jepax.train.eval_ijepa import evaluate_linear_probe
+from jepax.utils import filter_shard_map
 
 
 def parse_args():
@@ -54,7 +56,7 @@ def parse_args():
 
 
 def init_from_config(
-    cfg: Config, img_size: int, steps_per_epoch: int, key, *, shard: bool = False
+    cfg: IJEPAConfig, img_size: int, steps_per_epoch: int, key, *, shard: bool = False
 ):
     model_cfg, train_cfg, mask_cfg = cfg.model, cfg.train, cfg.mask
     total_steps = train_cfg.epochs * steps_per_epoch
@@ -142,7 +144,7 @@ def init_from_config(
     )
 
 
-def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: Config, path):
+def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: IJEPAConfig, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_ema_enc.eqx", ema_encoder)
     eqx.tree_serialise_leaves(path + "_opt.eqx", opt_state)
@@ -155,7 +157,9 @@ def load_checkpoint(path, img_size, steps_per_epoch, key, *, shard: bool = False
     with open(path + "_meta.yaml", "r") as f:
         meta = yaml.safe_load(f)
 
-    cfg = dacite.from_dict(Config, meta["config"], config=dacite.Config(cast=[tuple]))
+    cfg = dacite.from_dict(
+        IJEPAConfig, meta["config"], config=dacite.Config(cast=[tuple])
+    )
 
     (
         model,
@@ -225,6 +229,7 @@ def eval_probe(
         max_val_samples=cfg_eval.val_samples,
         weight_decay=cfg_eval.wd,
         bn_mode=getattr(cfg_eval, "bn_mode", "ema"),
+        modes=getattr(cfg_eval, "modes", None),
     )
 
     log_result = {k: v for k, v in eval_result.items() if k not in ("top1", "top5")}
@@ -291,19 +296,10 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key=None):
 
     z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
 
-    # Now z_pred_shifted[0:n_tgt] should match z_tgt[0:n_tgt]
     pos_idx = jnp.arange(seq_len)[None, :]  # [1, seq_len]
     valid_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
 
-    diff = z_pred_shifted - z_tgt
-    abs_diff = jnp.abs(diff)
-    smooth_l1 = jnp.where(abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5)
-
-    # Mean over feature dimension, then masked mean over sequence
-    loss_per_token = jnp.mean(smooth_l1, axis=-1)  # [B, seq_len]
-    loss = jnp.sum(loss_per_token * valid_mask) / jnp.sum(valid_mask)
-
-    return loss
+    return smooth_l1_loss(z_pred_shifted, z_tgt, valid_mask)
 
 
 def get_grad_norms(grads):
@@ -332,7 +328,7 @@ def get_grad_norms(grads):
 
 
 def train_ijepa(
-    cfg: Config,
+    cfg: IJEPAConfig,
     # dirs
     save_dir: str = "./checkpoints",
     data_dir: str | None = None,
@@ -372,7 +368,8 @@ def train_ijepa(
         mesh = jax.make_mesh((num_devices,), ("batch",))
         data_sharding = jshard.NamedSharding(mesh, jshard.PartitionSpec("batch"))
         assert data_cfg.batch_size % num_devices == 0, (
-            f"Batch size {data_cfg.batch_size} must be divisible by {num_devices} devices"
+            f"Batch size {data_cfg.batch_size} must be "
+            f"divisible by {num_devices} devices"
         )
     else:
         data_sharding = None
@@ -477,22 +474,17 @@ def train_ijepa(
 
         @eqx.filter_jit
         def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-            params, static = eqx.partition(model, eqx.is_array)
-
-            @partial(
-                jax.shard_map,
+            @filter_shard_map(
                 mesh=mesh,
                 in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
                 out_specs=(P(), P()),
             )
-            def sharded_loss_and_grad(params, x, z_ema, mask_ctx, mask_pred):
-                model_local = eqx.combine(params, static)
-
+            def sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred):
                 @eqx.filter_value_and_grad
-                def local_loss(model_local, x, z_ema, mask_ctx, mask_pred):
+                def local_loss(model, x, z_ema, mask_ctx, mask_pred):
                     seq_len = z_ema.shape[1]
-                    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-                        lambda xi, mc, mp: model_local(None, xi, mc, mp, train=True)
+                    z_pred, tgt_indices, n_tgt, pred_start, _ = jax.vmap(
+                        lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
                     )(x, mask_ctx, mask_pred)
                     z_ema_f = z_ema.astype(jnp.float32)
                     z_pred = z_pred.astype(jnp.float32)
@@ -504,26 +496,14 @@ def train_ijepa(
                     z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
                     pos_idx = jnp.arange(seq_len)[None, :]
                     valid_mask = pos_idx < n_tgt[:, None]
-                    diff = z_pred_shifted - z_tgt
-                    abs_diff = jnp.abs(diff)
-                    smooth_l1 = jnp.where(
-                        abs_diff < 1.0, 0.5 * diff**2, abs_diff - 0.5
-                    )
-                    loss_per_token = jnp.mean(smooth_l1, axis=-1)
-                    numer = jnp.sum(loss_per_token * valid_mask)
-                    denom = jnp.maximum(jnp.sum(valid_mask), 1.0)
-                    return numer / denom
+                    return smooth_l1_loss(z_pred_shifted, z_tgt, valid_mask)
 
-                loss, grads = local_loss(
-                    model_local, x, z_ema, mask_ctx, mask_pred
-                )
+                loss, grads = local_loss(model, x, z_ema, mask_ctx, mask_pred)
                 loss = jax.lax.pmean(loss, "batch")
                 grads = jax.lax.pmean(grads, "batch")
                 return loss, grads
 
-            loss, grads = sharded_loss_and_grad(
-                params, x, z_ema, mask_ctx, mask_pred
-            )
+            loss, grads = sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred)
             grad_norms = get_grad_norms(grads)
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
@@ -710,5 +690,5 @@ def train_ijepa(
 
 if __name__ == "__main__":
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_ijepa_config(args.config)
     train_ijepa(cfg=cfg, **vars(args))

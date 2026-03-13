@@ -8,6 +8,17 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
+DATASET_STATS = {
+    "CIFAR10": ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    "CIFAR100": ((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
+    "IMAGENET": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+}
+
+
+def get_normalize_stats(dataset_name: str):
+    return DATASET_STATS.get(dataset_name.upper())
+
+
 def _worker_init_fn(_):
     import os
 
@@ -199,9 +210,18 @@ def build_torch_dataloader(
 ):
     dataset_name = dataset_name.upper()
 
+    norm_key = dataset_name if dataset_name in DATASET_STATS else None
+    if norm_key is None and dataset_name in ["CIFAR", "CIFAR100"]:
+        norm_key = "CIFAR100"
+    elif norm_key is None and dataset_name in ["IMAGENET", "IMNET"]:
+        norm_key = "IMAGENET"
+    norm_transform = (
+        [transforms.Normalize(*DATASET_STATS[norm_key])] if norm_key else []
+    )
+
     if dataset_name in ["CIFAR10", "CIFAR", "CIFAR100"]:
         image_size = 32
-        transform = transforms.Compose([transforms.ToTensor()])
+        transform = transforms.Compose([transforms.ToTensor()] + norm_transform)
     elif dataset_name in ["IMAGENET", "IMNET"]:
         image_size = 224
         if is_train:
@@ -211,6 +231,7 @@ def build_torch_dataloader(
                     transforms.RandomHorizontalFlip(),
                     transforms.ToTensor(),
                 ]
+                + norm_transform
             )
         else:
             transform = transforms.Compose(
@@ -219,6 +240,7 @@ def build_torch_dataloader(
                     transforms.CenterCrop(image_size),
                     transforms.ToTensor(),
                 ]
+                + norm_transform
             )
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
@@ -252,3 +274,90 @@ def build_torch_dataloader(
     )
 
     return dataloader, num_classes, len(dataloader), image_size
+
+
+class TwoViewDataset(torch.utils.data.Dataset):
+    """Wraps a dataset to produce two RandomResizedCrop views per image."""
+
+    def __init__(self, dataset, image_size, crop_scale=(0.2, 1.0)):
+        self.dataset = dataset
+        self.transform = transforms.Compose(
+            [
+                transforms.RandomResizedCrop(image_size, scale=crop_scale),
+                transforms.ToTensor(),
+            ]
+        )
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        img, label = self.dataset[idx]
+        if not isinstance(img, Image.Image):
+            img = transforms.ToPILImage()(img)
+        view1 = self.transform(img)
+        view2 = self.transform(img)
+        return view1, view2, label
+
+
+def two_view_collate(batch):
+    """Collate two-view batch to numpy HWC arrays."""
+    view1s, view2s, labels = zip(*batch)
+    view1 = torch.stack(view1s).numpy()  # (B, C, H, W)
+    view2 = torch.stack(view2s).numpy()
+    view1 = np.ascontiguousarray(np.transpose(view1, (0, 2, 3, 1)))  # (B, H, W, C)
+    view2 = np.ascontiguousarray(np.transpose(view2, (0, 2, 3, 1)))
+    labels = np.array(labels)
+    return {"view1": view1, "view2": view2, "label": labels}
+
+
+def build_two_view_dataloader(
+    dataset_name,
+    data_dir,
+    batch_size=256,
+    is_train=True,
+    num_workers=4,
+    shuffle=True,
+    pin_memory=True,
+    persistent_workers=True,
+    prefetch_factor=4,
+    crop_scale=(0.2, 1.0),
+):
+    """Build a two-view dataloader for contrastive SSL."""
+    dataset_name = dataset_name.upper()
+
+    if dataset_name in ["CIFAR10", "CIFAR", "CIFAR100"]:
+        image_size = 32
+    elif dataset_name in ["IMAGENET", "IMNET"]:
+        image_size = 224
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+    if dataset_name == "CIFAR10":
+        base_dataset = datasets.CIFAR10(data_dir, train=is_train, download=True)
+        num_classes = 10
+    elif dataset_name in ["CIFAR", "CIFAR100"]:
+        base_dataset = datasets.CIFAR100(data_dir, train=is_train, download=True)
+        num_classes = 100
+    elif dataset_name in ["IMAGENET", "IMNET"]:
+        root = os.path.join(data_dir, "train" if is_train else "val")
+        base_dataset = datasets.ImageFolder(root)
+        num_classes = 1000
+
+    dataset = TwoViewDataset(base_dataset, image_size, crop_scale=crop_scale)
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        drop_last=is_train,
+        collate_fn=two_view_collate,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers if num_workers > 0 else False,
+        worker_init_fn=_worker_init_fn,
+    )
+
+    steps_per_epoch = len(base_dataset) // batch_size
+    return dataloader, num_classes, steps_per_epoch, image_size
