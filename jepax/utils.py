@@ -65,7 +65,8 @@ def filter_shard_map(
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     axis_names: frozenset[Hashable] = frozenset(),
     check_vma: bool = True,
-) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    pass
 
 
 @overload
@@ -77,7 +78,8 @@ def filter_shard_map(
     mesh: jax.sharding.Mesh | jax.sharding.AbstractMesh | None = None,
     axis_names: frozenset[Hashable] = frozenset(),
     check_vma: bool = True,
-) -> Callable[..., Any]: ...
+) -> Callable[..., Any]:
+    pass
 
 
 def filter_shard_map(

@@ -230,9 +230,9 @@ class Transformer(eqx.Module):
         if pe_type == "1d":
             self.pe = PositionalEncoding(dim=dim, seq_len=seq_len)
         elif pe_type == "2d":
-            assert grid_size is not None, (
-                "Please specify static grid size for 2D encoding"
-            )
+            assert (
+                grid_size is not None
+            ), "Please specify static grid size for 2D encoding"
             self.pe = PositionalEncoding2D(
                 grid_size=grid_size, dim=dim, seq_len=seq_len
             )

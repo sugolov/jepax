@@ -5,7 +5,6 @@ from jaxtyping import Array, Float, Key
 
 from jepax.model.transformer import Transformer
 
-
 vit_classifier_configs = {
     "vit-ti": {"dim": 192, "num_layers": 12, "num_head": 3, "mlp_ratio": 4.0},
     "vit-s": {"dim": 384, "num_layers": 12, "num_head": 6, "mlp_ratio": 4.0},

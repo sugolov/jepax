@@ -7,7 +7,6 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-
 DATASET_STATS = {
     "CIFAR10": ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     "CIFAR100": ((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),

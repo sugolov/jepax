@@ -15,7 +15,6 @@ import yaml
 from jax import numpy as jnp
 from tqdm import tqdm
 
-
 try:
     import wandb
 except ImportError:
@@ -508,6 +507,7 @@ def train_ijepa(
             updates, opt_state = optimizer.update(grads, opt_state, model)
             model = eqx.apply_updates(model, updates)
             return model, opt_state, loss, grad_norms
+
     else:
 
         @eqx.filter_jit

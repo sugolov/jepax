@@ -13,7 +13,6 @@ import yaml
 from jax import numpy as jnp
 from tqdm import tqdm
 
-
 try:
     import wandb
 except ImportError:
