@@ -25,7 +25,6 @@ from jepax.model.vit import (
     ViTclassifier,
 )
 
-
 __all__ = [
     # Transformer
     "Attention",

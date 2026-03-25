@@ -7,7 +7,6 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Key
 
-
 # from eqxvision
 
 
@@ -287,13 +286,21 @@ def build_resnet_backbone(
         raise ValueError(f"Unknown resnet variant: {variant}")
 
     if norm == "bn":
+
         def norm_layer(channels):
-            return eqx.nn.BatchNorm(channels, axis_name="batch", mode="batch", momentum=0.9)
+            return eqx.nn.BatchNorm(
+                channels, axis_name="batch", mode="batch", momentum=0.9
+            )
+
     elif norm == "gn":
+
         def norm_layer(channels):
             return eqx.nn.GroupNorm(min(32, channels), channels)
+
     else:
         raise ValueError(f"Unknown norm: {norm}")
 
-    resnet = make_fn(num_classes=1, norm_layer=norm_layer, small_input=small_input, key=key)
+    resnet = make_fn(
+        num_classes=1, norm_layer=norm_layer, small_input=small_input, key=key
+    )
     return ResNetBackbone(resnet=resnet), 512

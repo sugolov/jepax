@@ -11,7 +11,6 @@ from jepax.model.transformer import (
 )
 from jepax.model.vit import PatchEmbedding
 
-
 ijepa_encoder_configs = {
     "vit-ti": {"dim": 192, "num_layers": 12, "num_head": 3, "mlp_ratio": 4.0},
     "vit-s": {"dim": 384, "num_layers": 12, "num_head": 6, "mlp_ratio": 4.0},
