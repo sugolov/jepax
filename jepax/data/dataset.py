@@ -2,10 +2,8 @@ import os
 
 import grain.python as grain
 import numpy as np
-import torch
 from PIL import Image
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torchvision import datasets
 
 DATASET_STATS = {
     "CIFAR10": ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
@@ -16,23 +14,6 @@ DATASET_STATS = {
 
 def get_normalize_stats(dataset_name: str):
     return DATASET_STATS.get(dataset_name.upper())
-
-
-def _worker_init_fn(_):
-    import os
-
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    torch.set_num_threads(1)
-
-
-def numpy_collate(batch):
-    """Collate function to convert batch to numpy arrays in BHWC format"""
-    images, labels = zip(*batch)
-    images = torch.stack(images).numpy()  # (B, C, H, W)
-    images = np.ascontiguousarray(np.transpose(images, (0, 2, 3, 1)))  # (B, H, W, C)
-    labels = np.array(labels)
-    return images, labels
 
 
 class TorchDataSource(grain.RandomAccessDataSource):
@@ -175,7 +156,10 @@ def build_dataloader(
 
     if dataset_name in ["CIFAR10", "CIFAR", "CIFAR100"]:
         image_size = 32
-        transforms = [RandomHorizontalFlip(p=0.5), ToNumpyFloat32()]
+        transforms = []
+        if is_train:
+            transforms.append(RandomHorizontalFlip(p=0.5))
+        transforms.append(ToNumpyFloat32())
     elif dataset_name in ["IMAGENET", "IMNET"]:
         image_size = 224
         if is_train:
@@ -235,85 +219,6 @@ def build_dataloader(
     else:
         steps_per_epoch = (len(torch_source) + batch_size - 1) // batch_size
     return dataloader, num_classes, steps_per_epoch, image_size
-
-
-def build_torch_dataloader(
-    dataset_name,
-    data_dir,
-    batch_size=32,
-    is_train=True,
-    num_workers=4,
-    shuffle=False,
-    pin_memory=True,
-    persistent_workers=True,
-    prefetch_factor=4,
-):
-    dataset_name = dataset_name.upper()
-
-    norm_key = dataset_name if dataset_name in DATASET_STATS else None
-    if norm_key is None and dataset_name in ["CIFAR", "CIFAR100"]:
-        norm_key = "CIFAR100"
-    elif norm_key is None and dataset_name in ["IMAGENET", "IMNET"]:
-        norm_key = "IMAGENET"
-    norm_transform = (
-        [transforms.Normalize(*DATASET_STATS[norm_key])] if norm_key else []
-    )
-
-    if dataset_name in ["CIFAR10", "CIFAR", "CIFAR100"]:
-        image_size = 32
-        transform = transforms.Compose([transforms.ToTensor()] + norm_transform)
-    elif dataset_name in ["IMAGENET", "IMNET"]:
-        image_size = 224
-        if is_train:
-            transform = transforms.Compose(
-                [
-                    transforms.RandomResizedCrop(image_size),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                ]
-                + norm_transform
-            )
-        else:
-            transform = transforms.Compose(
-                [
-                    transforms.Resize(256),
-                    transforms.CenterCrop(image_size),
-                    transforms.ToTensor(),
-                ]
-                + norm_transform
-            )
-    else:
-        raise ValueError(f"Unknown dataset: {dataset_name}")
-
-    if dataset_name == "CIFAR10":
-        dataset = datasets.CIFAR10(
-            data_dir, train=is_train, transform=transform, download=True
-        )
-        num_classes = 10
-    elif dataset_name in ["CIFAR", "CIFAR100"]:
-        dataset = datasets.CIFAR100(
-            data_dir, train=is_train, transform=transform, download=True
-        )
-        num_classes = 100
-    elif dataset_name in ["IMAGENET", "IMNET"]:
-        root = os.path.join(data_dir, "train" if is_train else "val")
-        dataset = datasets.ImageFolder(root, transform=transform)
-        num_classes = 1000
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        drop_last=is_train,
-        collate_fn=numpy_collate,
-        prefetch_factor=prefetch_factor,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-        worker_init_fn=_worker_init_fn,
-    )
-
-    return dataloader, num_classes, len(dataloader), image_size
 
 
 def build_two_view_dataloader(
