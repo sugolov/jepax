@@ -203,6 +203,8 @@ def mask_to_indices(mask: Array, max_len: int) -> tuple[Array, int]:
         n_keep: number of True positions
     """
     indices = jnp.where(mask, size=max_len, fill_value=0)[0]
+    # TODO: great example of a confusing variable. 
+    # - n_keep is actually more understandable as a call to jnp.sum(mask) later in the code
     n_keep = jnp.sum(mask)
     return indices, n_keep
 
@@ -262,25 +264,24 @@ class IJEPAEncoder(eqx.Module):
         x = self.pe(x)
 
         if mask is not None:
-            mask_flat = mask.reshape(-1)
-            indices, n_keep = mask_to_indices(mask_flat, n_patches)
 
-            x_gathered = x[indices]
+            mask = mask.reshape(-1)
+            indices, _ = mask_to_indices(mask, n_patches)
+            x_mask = x[indices]
 
             # Zero out padding positions
-            valid_mask = jnp.arange(n_patches) < n_keep
-            x_gathered = jnp.where(valid_mask[:, None], x_gathered, 0.0)
+            valid_mask = jnp.arange(n_patches) < jnp.sum(mask)
+            x_mask = jnp.where(valid_mask[:, None], x_mask, 0.0)
 
             # Attention mask: only attend to first n_keep positions
             attn_mask = valid_mask[:, None] & valid_mask[None, :]
         else:
-            x_gathered = x
+            x_mask = x
             attn_mask = None
-            n_keep = n_patches
             indices = jnp.arange(n_patches)
 
         out = self.transformer(
-            x_gathered,
+            x_mask,
             attn_mask=attn_mask,
             key=key,
             train=train,
@@ -290,8 +291,9 @@ class IJEPAEncoder(eqx.Module):
 
         if get_intermediates:
             out, intermediates = out
-            return out, intermediates, indices, n_keep
-        return out, indices, n_keep
+            return out, intermediates, indices
+            
+        return out, indices
 
 
 class IJEPAPredictor(eqx.Module):
@@ -433,7 +435,8 @@ class IJEPA(eqx.Module):
         mask_enc = mask_ctx & ~mask_tgt
 
         # Encode visible context patches
-        z_enc, ctx_indices, n_ctx = self.encoder(k1, x, mask_enc, train=train)
+        z_enc, ctx_indices = self.encoder(k1, x, mask_enc, train=train)
+        n_ctx = jnp.sum(mask_enc)
 
         # Get target indices
         tgt_flat = mask_tgt.flatten()
@@ -451,4 +454,5 @@ class IJEPA(eqx.Module):
             train=train,
         )
 
+        # TODO: find any way so this doesnt look like this
         return z_pred, tgt_indices, n_tgt, pred_start, pred_end

@@ -261,7 +261,8 @@ def normalize_targets(z_ema):
     var = jnp.var(z_ema, axis=-1, keepdims=True)
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
 
-
+# TODO: old fn, delete or refactor
+# - good example of much more readable fn
 @eqx.filter_value_and_grad
 def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key=None):
     """Compute loss and gradients.
@@ -469,15 +470,19 @@ def train_ijepa(
 
     P = jshard.PartitionSpec
 
+    # TODO: manage the decorator of an external function, dont do this if
     if shard:
-
+        #TODO: refactor this outside in a readable way
         @eqx.filter_jit
         def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+            #TODO: specify this better
             @filter_shard_map(
                 mesh=mesh,
                 in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
                 out_specs=(P(), P()),
             )
+            # TODO: 3 nested functions, break these up
+            # TODO: refactor all this roll stuff into the model in an intelligent way
             def sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred):
                 @eqx.filter_value_and_grad
                 def local_loss(model, x, z_ema, mask_ctx, mask_pred):
