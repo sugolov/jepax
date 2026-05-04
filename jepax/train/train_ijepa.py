@@ -142,7 +142,6 @@ def init_from_config(
         key,
     )
 
-
 def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: IJEPAConfig, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_ema_enc.eqx", ema_encoder)
@@ -275,7 +274,7 @@ def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key=None):
     """
     seq_len = z_ema.shape[1]  # N_patches
 
-    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
+    z_pred, tgt_indices, n_tgt = jax.vmap(
         lambda x, mc, mp: model(key, x, mc, mp, train=True)
     )(x_b, mask_ctx_b, mask_pred_b)
 
@@ -487,20 +486,16 @@ def train_ijepa(
                 @eqx.filter_value_and_grad
                 def local_loss(model, x, z_ema, mask_ctx, mask_pred):
                     seq_len = z_ema.shape[1]
-                    z_pred, tgt_indices, n_tgt, pred_start, _ = jax.vmap(
+                    z_pred, tgt_indices, n_tgt = jax.vmap(
                         lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
                     )(x, mask_ctx, mask_pred)
-                    z_ema_f = z_ema.astype(jnp.float32)
+                    z_ema = z_ema.astype(jnp.float32)           
                     z_pred = z_pred.astype(jnp.float32)
-                    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema_f, tgt_indices)
+                    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices) # subsetted z_ema
 
-                    def shift_pred(z_p, ps):
-                        return jnp.roll(z_p, -ps, axis=0)
-
-                    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
                     pos_idx = jnp.arange(seq_len)[None, :]
                     valid_mask = pos_idx < n_tgt[:, None]
-                    return smooth_l1_loss(z_pred_shifted, z_tgt, valid_mask)
+                    return smooth_l1_loss(z_pred, z_tgt, valid_mask)
 
                 loss, grads = local_loss(model, x, z_ema, mask_ctx, mask_pred)
                 loss = jax.lax.pmean(loss, "batch")
