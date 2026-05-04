@@ -1,4 +1,5 @@
 import jax
+
 from jepax.model.vit import PatchEmbedding, ViTclassifier
 
 

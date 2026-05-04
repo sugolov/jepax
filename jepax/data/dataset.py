@@ -132,6 +132,34 @@ class ToNumpyFloat32(grain.MapTransform):
         return x
 
 
+class Normalize(grain.MapTransform):
+    """Normalize CHW numpy images."""
+
+    def __init__(self, mean, std):
+        self.mean = np.asarray(mean, dtype=np.float32)[:, None, None]
+        self.std = np.asarray(std, dtype=np.float32)[:, None, None]
+
+    def map(self, x):
+        x["image"] = (x["image"] - self.mean) / self.std
+        return x
+
+
+class TwoViewRandomResizedCrop(grain.MapTransform):
+    """Create two HWC float32 random-resized-crop views."""
+
+    def __init__(self, size, scale=(0.2, 1.0)):
+        self.crop = RandomResizedCrop(size, scale=scale)
+
+    def map(self, x):
+        img = x["image"]
+        view1 = self.crop.map({"image": img})["image"]
+        view2 = self.crop.map({"image": img})["image"]
+        x["view1"] = np.array(view1, dtype=np.float32) / 255.0
+        x["view2"] = np.array(view2, dtype=np.float32) / 255.0
+        del x["image"]
+        return x
+
+
 def build_dataloader(
     dataset_name,
     data_dir,
@@ -141,6 +169,7 @@ def build_dataloader(
     shuffle=False,
     prefetch_factor=4,
     seed=0,
+    normalize=False,
 ):
     dataset_name = dataset_name.upper()
 
@@ -176,6 +205,14 @@ def build_dataloader(
         dataset = datasets.ImageFolder(root)
         num_classes = 1000
 
+    norm_key = dataset_name if dataset_name in DATASET_STATS else None
+    if norm_key is None and dataset_name in ["CIFAR", "CIFAR100"]:
+        norm_key = "CIFAR100"
+    elif norm_key is None and dataset_name in ["IMAGENET", "IMNET"]:
+        norm_key = "IMAGENET"
+    if normalize and norm_key is not None:
+        transforms.append(Normalize(*DATASET_STATS[norm_key]))
+
     torch_source = TorchDataSource(dataset)
 
     dataloader = grain.DataLoader(
@@ -192,7 +229,11 @@ def build_dataloader(
         worker_count=num_workers,
         worker_buffer_size=prefetch_factor,
     )
-    steps_per_epoch = len(torch_source) // batch_size
+    # for drop_remainder=is_train
+    if is_train:
+        steps_per_epoch = len(torch_source) // batch_size
+    else:
+        steps_per_epoch = (len(torch_source) + batch_size - 1) // batch_size
     return dataloader, num_classes, steps_per_epoch, image_size
 
 
@@ -275,41 +316,6 @@ def build_torch_dataloader(
     return dataloader, num_classes, len(dataloader), image_size
 
 
-class TwoViewDataset(torch.utils.data.Dataset):
-    """Wraps a dataset to produce two RandomResizedCrop views per image."""
-
-    def __init__(self, dataset, image_size, crop_scale=(0.2, 1.0)):
-        self.dataset = dataset
-        self.transform = transforms.Compose(
-            [
-                transforms.RandomResizedCrop(image_size, scale=crop_scale),
-                transforms.ToTensor(),
-            ]
-        )
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        img, label = self.dataset[idx]
-        if not isinstance(img, Image.Image):
-            img = transforms.ToPILImage()(img)
-        view1 = self.transform(img)
-        view2 = self.transform(img)
-        return view1, view2, label
-
-
-def two_view_collate(batch):
-    """Collate two-view batch to numpy HWC arrays."""
-    view1s, view2s, labels = zip(*batch)
-    view1 = torch.stack(view1s).numpy()  # (B, C, H, W)
-    view2 = torch.stack(view2s).numpy()
-    view1 = np.ascontiguousarray(np.transpose(view1, (0, 2, 3, 1)))  # (B, H, W, C)
-    view2 = np.ascontiguousarray(np.transpose(view2, (0, 2, 3, 1)))
-    labels = np.array(labels)
-    return {"view1": view1, "view2": view2, "label": labels}
-
-
 def build_two_view_dataloader(
     dataset_name,
     data_dir,
@@ -317,10 +323,9 @@ def build_two_view_dataloader(
     is_train=True,
     num_workers=4,
     shuffle=True,
-    pin_memory=True,
-    persistent_workers=True,
     prefetch_factor=4,
     crop_scale=(0.2, 1.0),
+    seed=0,
 ):
     """Build a two-view dataloader for contrastive SSL."""
     dataset_name = dataset_name.upper()
@@ -343,20 +348,27 @@ def build_two_view_dataloader(
         base_dataset = datasets.ImageFolder(root)
         num_classes = 1000
 
-    dataset = TwoViewDataset(base_dataset, image_size, crop_scale=crop_scale)
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        drop_last=is_train,
-        collate_fn=two_view_collate,
-        prefetch_factor=prefetch_factor,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers if num_workers > 0 else False,
-        worker_init_fn=_worker_init_fn,
+    torch_source = TorchDataSource(base_dataset)
+    dataloader = grain.DataLoader(
+        data_source=torch_source,
+        sampler=grain.IndexSampler(
+            len(torch_source),
+            shuffle=shuffle,
+            shard_options=grain.NoSharding(),
+            seed=seed,
+            num_epochs=1,
+        ),
+        operations=[
+            TwoViewRandomResizedCrop(image_size, scale=crop_scale),
+            grain.Batch(batch_size=batch_size, drop_remainder=is_train),
+        ],
+        worker_count=num_workers,
+        worker_buffer_size=prefetch_factor,
     )
 
-    steps_per_epoch = len(base_dataset) // batch_size
+    # for drop_remainder
+    if is_train:
+        steps_per_epoch = len(base_dataset) // batch_size
+    else:
+        steps_per_epoch = (len(base_dataset) + batch_size - 1) // batch_size
     return dataloader, num_classes, steps_per_epoch, image_size
