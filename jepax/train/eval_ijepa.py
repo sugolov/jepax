@@ -4,6 +4,8 @@ import numpy as np
 import optax
 from jax import numpy as jnp
 
+from jepax.model import IJEPAEncoder
+
 
 @eqx.filter_jit
 def _get_reps_last(encoder, images, key):
@@ -11,19 +13,19 @@ def _get_reps_last(encoder, images, key):
     keys = jax.random.split(key, images.shape[0])
 
     def encode(k, img):
-        out, _, _ = encoder(k, img, mask=None, train=False)
+        out, _ = encoder(k, img, mask=None, train=False)
         return out.mean(axis=0)
 
     return jax.vmap(encode)(keys, images)
 
 
 @eqx.filter_jit
-def _get_reps_concat(encoder, images, key, n_concat=4):
+def _get_reps_concat(encoder: IJEPAEncoder, images, key, n_concat=4):
     """Get concatenated avg-pooled representations from last n layers."""
     keys = jax.random.split(key, images.shape[0])
 
     def encode(k, img):
-        out, intermediates, _, _ = encoder(
+        out, intermediates, _ = encoder(
             k, img, mask=None, train=False, get_intermediates=True
         )
         last = out.mean(axis=0)
@@ -34,7 +36,7 @@ def _get_reps_concat(encoder, images, key, n_concat=4):
     return jax.vmap(encode)(keys, images)
 
 
-def extract_features(encoder, loader, key, max_samples=None, n_concat=4):
+def extract_features(encoder: IJEPAEncoder, loader, key, max_samples=None, n_concat=4):
     """Extract features from encoder."""
     last_list, concat_list, labels_list = [], [], []
     n_seen = 0

@@ -437,7 +437,7 @@ class IJEPA(eqx.Module):
 
         # Encoder mask: context minus targets
         mask_tgt = jnp.any(mask_pred, axis=0)  # [N_patches]
-        mask_enc = mask_ctx & ~mask_tgt
+        mask_enc = mask_ctx & ~mask_tgt  # [N_patches]
 
         # Encode visible context patches
         z_enc, ctx_indices = self.encoder(k1, x, mask_enc, train=train)
@@ -458,7 +458,7 @@ class IJEPA(eqx.Module):
             seq_len=n_patches,
             train=train,
         )
-
+        # move context to end, z_preds from [0, n_tgt) (see line 400)
         z_pred = jnp.roll(z_pred, -n_ctx, axis=0)
 
         return z_pred, tgt_indices, n_tgt
