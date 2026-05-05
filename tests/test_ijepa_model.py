@@ -82,7 +82,8 @@ def _assemble(ctx_proj, pred_tokens, n_ctx, n_tgt, seq_len):
 
 
 def test_sincos_embed():
-    """_sincos_embed returns shape [N, dim] and gives sin=0, cos=1 at position 0."""
+    """_sincos_embed returns shape [N, dim] and gives"""
+    """sin=0, cos=1 at position 0."""
     out = _sincos_embed(jnp.arange(10), dim=16)
     assert out.shape == (10, 16)
     pos0 = _sincos_embed(jnp.array([0]), dim=8)
@@ -91,7 +92,8 @@ def test_sincos_embed():
 
 
 def test_compute_2d_pe_decomposition():
-    """2D PE for index k splits into [col PE | row PE] where col=k%G, row=k//G."""
+    """2D PE for index k splits into [col PE | row PE]"""
+    """where col=k%G, row=k//G."""
     out = compute_2d_pe(jnp.array([9]), grid_size=4, dim=32)  # 9 → row=2, col=1
     col_pe = _sincos_embed(jnp.array([1]), dim=16)
     row_pe = _sincos_embed(jnp.array([2]), dim=16)
@@ -100,7 +102,8 @@ def test_compute_2d_pe_decomposition():
 
 
 def test_compute_2d_pe_padding():
-    """Padded indices (fill_value=0) get the same PE as patch 0 — must be masked downstream."""
+    """Padded indices (fill_value=0) get the same PE as patch 0 — must be"""
+    """masked downstream."""
     padded = compute_2d_pe(jnp.array([5, 0, 0]), grid_size=4, dim=32)
     pe_zero = compute_2d_pe(jnp.array([0]), grid_size=4, dim=32)
     assert jnp.allclose(padded[1], pe_zero[0])
@@ -108,7 +111,8 @@ def test_compute_2d_pe_padding():
 
 
 def test_mask_to_indices_basic():
-    """mask_to_indices packs True positions to the front, pads remainder with 0."""
+    """mask_to_indices packs True positions to the front,"""
+    """pads remainder with 0."""
     m = _bool_mask(8, [1, 3, 4])
     idx, n = mask_to_indices(m, max_len=8)
     assert int(n) == 3
@@ -131,7 +135,8 @@ def test_mask_to_indices_edge_cases():
 
 
 def test_pred_idx_clip():
-    """pred_idx = clip(arange - n_ctx, 0, seq_len-1) shifts pred_tokens to start at n_ctx."""
+    """pred_idx = clip(arange - n_ctx, 0, seq_len-1)"""
+    """shifts pred_tokens to start at n_ctx."""
     seq_len, n_ctx = 8, 3
     pred_idx = jnp.clip(jnp.arange(seq_len) - n_ctx, 0, seq_len - 1)
     assert jnp.array_equal(pred_idx, jnp.array([0, 0, 0, 0, 1, 2, 3, 4]))
@@ -151,7 +156,8 @@ def test_predictor_layout():
 
 
 def test_predictor_padding_no_leak():
-    """Garbage values in padded slots of ctx_proj and pred_tokens must not appear in combined."""
+    """Garbage values in padded slots of ctx_proj and pred_tokens"""
+    """must not appear in combined."""
     seq_len, D = 8, 4
     n_ctx, n_tgt = 2, 2
     ctx_proj = jnp.ones((seq_len, D)).at[n_ctx:].set(1e9)
@@ -162,7 +168,8 @@ def test_predictor_padding_no_leak():
 
 
 def test_predictor_no_targets():
-    """With n_tgt=0, combined is pure context followed by zeros (pred_tokens ignored)."""
+    """With n_tgt=0, combined is pure context followed by zeros"""
+    """(pred_tokens ignored)."""
     seq_len, D = 8, 4
     combined = _assemble(
         jnp.ones((seq_len, D)),
@@ -209,7 +216,8 @@ def test_predictor_full_packing():
 
 
 def test_encoder_unmasked():
-    """With mask=None, encoder returns all patches in identity order [0, 1, ..., n_patches)."""
+    """With mask=None, encoder returns all patches"""
+    """in identity order [0, 1, ..., n_patches)."""
     enc = _make_encoder()
     x = jax.random.normal(jax.random.key(1), IMG_SHAPE)
     out, indices = enc(None, x, mask=None, train=False)
@@ -218,7 +226,8 @@ def test_encoder_unmasked():
 
 
 def test_encoder_indices_match_mask_packing():
-    """Returned indices match mask_to_indices output: kept patches in ascending order."""
+    """Returned indices match mask_to_indices output:"""
+    """kept patches in ascending order."""
     enc = _make_encoder()
     x = jax.random.normal(jax.random.key(1), IMG_SHAPE)
     keep = [2, 5, 9, 11]
@@ -253,7 +262,8 @@ def test_encoder_isolation():
 
 
 def test_ijepa_shapes():
-    """Forward returns z_pred of shape [seq_len, enc_dim], plus tgt_indices and n_tgt."""
+    """Forward returns z_pred of shape [seq_len, enc_dim],"""
+    """plus tgt_indices and n_tgt."""
     model = _make_model()
     x = jax.random.normal(jax.random.key(1), IMG_SHAPE)
     mask_ctx = _bool_mask(16, list(range(10)))
@@ -296,7 +306,8 @@ def test_overlapping_pred_masks_dedup():
 
 
 def test_encoder_excludes_targets():
-    """mask_enc = mask_ctx & ~mask_tgt: targets present in mask_ctx are removed before encoding.
+    """mask_enc = mask_ctx & ~mask_tgt: targets present in mask_ctx are removed
+    before encoding.
 
     This is the key invariant preventing the predictor from trivially copying targets
     it shouldn't see. Two configs producing the same effective mask_enc must yield
