@@ -5,6 +5,7 @@ from collections import OrderedDict
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
+from typing import Optional
 
 import dacite
 import equinox as eqx
@@ -14,7 +15,6 @@ import optax
 import yaml
 from jax import numpy as jnp
 from tqdm import tqdm
-from typing import Optional
 
 try:
     import wandb
@@ -143,6 +143,7 @@ def init_from_config(
         key,
     )
 
+
 def save_checkpoint(model, ema_encoder, opt_state, epoch, cfg: IJEPAConfig, path):
     eqx.tree_serialise_leaves(path + "_model.eqx", model)
     eqx.tree_serialise_leaves(path + "_ema_enc.eqx", ema_encoder)
@@ -261,6 +262,7 @@ def normalize_targets(z_ema):
     var = jnp.var(z_ema, axis=-1, keepdims=True)
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
 
+
 def loss_fn(model, x, z_ema, mask_ctx, mask_pred):
     """
     Loss function for IJEPA
@@ -278,23 +280,24 @@ def loss_fn(model, x, z_ema, mask_ctx, mask_pred):
     z_pred, tgt_indices, n_tgt = jax.vmap(
         lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
     )(x, mask_ctx, mask_pred)
-    z_ema = z_ema.astype(jnp.float32)           
+    z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
-    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices) # subsetted z_ema
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # subsetted z_ema
 
     pos_idx = jnp.arange(seq_len)[None, :]
     valid_mask = pos_idx < n_tgt[:, None]
 
     return smooth_l1_loss(z_pred, z_tgt, valid_mask)
 
+
 def make_step_model(optimizer, shard=False, mesh=None):
     grad_fn = eqx.filter_value_and_grad(loss_fn)
 
     def apply_grads(model, opt_state, loss, grads):
-            grad_norms = get_grad_norms(grads)
-            updates, opt_state = optimizer.update(grads, opt_state, model)
-            model = eqx.apply_updates(model, updates)
-            return model, opt_state, loss, grad_norms
+        grad_norms = get_grad_norms(grads)
+        updates, opt_state = optimizer.update(grads, opt_state, model)
+        model = eqx.apply_updates(model, updates)
+        return model, opt_state, loss, grad_norms
 
     if shard:
         P = jshard.PartitionSpec
@@ -316,16 +319,18 @@ def make_step_model(optimizer, shard=False, mesh=None):
                 return loss, grads
 
             loss, grads = sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred)
-    
+
             return apply_grads(model, opt_state, loss, grads)
-        
+
     else:
+
         @eqx.filter_jit
         def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
             loss, grads = grad_fn(model, x, z_ema, mask_ctx, mask_pred)
             return apply_grads(model, opt_state, loss, grads)
 
-    return step_model 
+    return step_model
+
 
 def get_grad_norms(grads):
     # track gradient statistics

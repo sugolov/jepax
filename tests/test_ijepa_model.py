@@ -9,17 +9,17 @@ to debug.
 Note: PatchEmbedding expects channels-first input [C, H, W], despite the encoder
 docstring saying [H, W, C].
 """
+
 import jax
 import jax.numpy as jnp
 
 from jepax.model.ijepa import (
     _sincos_embed,
     compute_2d_pe,
-    mask_to_indices,
-    IJEPAEncoder,
     get_ijepa_model,
+    IJEPAEncoder,
+    mask_to_indices,
 )
-
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -38,17 +38,29 @@ def _bool_mask(n, true_indices):
 def _make_encoder():
     """Small encoder for fast tests: 4x4 patch grid, 32-dim, 1 layer."""
     return IJEPAEncoder(
-        num_channels=3, patch_size=4, img_size=16, dim=32,
-        num_layers=1, num_head=2, mlp_ratio=2.0, p_drop=0.0,
-        seq_len=16, key=jax.random.key(0),
+        num_channels=3,
+        patch_size=4,
+        img_size=16,
+        dim=32,
+        num_layers=1,
+        num_head=2,
+        mlp_ratio=2.0,
+        p_drop=0.0,
+        seq_len=16,
+        key=jax.random.key(0),
     )
 
 
 def _make_model():
     """Small full IJEPA model using the 'ijepa-test' config."""
     model, _ = get_ijepa_model(
-        "ijepa-test", key=jax.random.key(0),
-        num_channels=3, patch_size=4, img_size=16, p_drop=0.0, seq_len=16,
+        "ijepa-test",
+        key=jax.random.key(0),
+        num_channels=3,
+        patch_size=4,
+        img_size=16,
+        p_drop=0.0,
+        seq_len=16,
     )
     return model
 
@@ -59,15 +71,15 @@ def _assemble(ctx_proj, pred_tokens, n_ctx, n_tgt, seq_len):
     ctx_mask = jnp.arange(seq_len) < n_ctx
     tgt_mask = (jnp.arange(seq_len) >= n_ctx) & (jnp.arange(seq_len) < n_total)
     pred_idx = jnp.clip(jnp.arange(seq_len) - n_ctx, 0, seq_len - 1)
-    return (
-        jnp.where(ctx_mask[:, None], ctx_proj, 0.0)
-        + jnp.where(tgt_mask[:, None], pred_tokens[pred_idx], 0.0)
+    return jnp.where(ctx_mask[:, None], ctx_proj, 0.0) + jnp.where(
+        tgt_mask[:, None], pred_tokens[pred_idx], 0.0
     )
 
 
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
+
 
 def test_sincos_embed():
     """_sincos_embed returns shape [N, dim] and gives sin=0, cos=1 at position 0."""
@@ -117,6 +129,7 @@ def test_mask_to_indices_edge_cases():
 # Predictor index logic in isolation
 # ---------------------------------------------------------------------------
 
+
 def test_pred_idx_clip():
     """pred_idx = clip(arange - n_ctx, 0, seq_len-1) shifts pred_tokens to start at n_ctx."""
     seq_len, n_ctx = 8, 3
@@ -133,8 +146,8 @@ def test_predictor_layout():
 
     combined = _assemble(ctx_proj, pred_tokens, n_ctx, n_tgt, seq_len)
     assert jnp.array_equal(combined[0:n_ctx], ctx_proj[0:n_ctx])
-    assert jnp.array_equal(combined[n_ctx:n_ctx + n_tgt], pred_tokens[0:n_tgt])
-    assert jnp.all(combined[n_ctx + n_tgt:] == 0)
+    assert jnp.array_equal(combined[n_ctx : n_ctx + n_tgt], pred_tokens[0:n_tgt])
+    assert jnp.all(combined[n_ctx + n_tgt :] == 0)
 
 
 def test_predictor_padding_no_leak():
@@ -151,8 +164,13 @@ def test_predictor_padding_no_leak():
 def test_predictor_no_targets():
     """With n_tgt=0, combined is pure context followed by zeros (pred_tokens ignored)."""
     seq_len, D = 8, 4
-    combined = _assemble(jnp.ones((seq_len, D)), jnp.full((seq_len, D), 999.0),
-                         n_ctx=4, n_tgt=0, seq_len=seq_len)
+    combined = _assemble(
+        jnp.ones((seq_len, D)),
+        jnp.full((seq_len, D), 999.0),
+        n_ctx=4,
+        n_tgt=0,
+        seq_len=seq_len,
+    )
     assert jnp.array_equal(combined[:4], jnp.ones((4, D)))
     assert jnp.all(combined[4:] == 0)
 
@@ -160,8 +178,13 @@ def test_predictor_no_targets():
 def test_predictor_no_context():
     """With n_ctx=0, combined starts directly with pred_tokens (ctx_proj ignored)."""
     seq_len, D = 8, 4
-    combined = _assemble(jnp.full((seq_len, D), 999.0), jnp.ones((seq_len, D)),
-                         n_ctx=0, n_tgt=3, seq_len=seq_len)
+    combined = _assemble(
+        jnp.full((seq_len, D), 999.0),
+        jnp.ones((seq_len, D)),
+        n_ctx=0,
+        n_tgt=3,
+        seq_len=seq_len,
+    )
     assert jnp.array_equal(combined[:3], jnp.ones((3, D)))
     assert jnp.all(combined[3:] == 0)
 
@@ -169,8 +192,13 @@ def test_predictor_no_context():
 def test_predictor_full_packing():
     """When n_ctx + n_tgt == seq_len there's no zero padding region."""
     seq_len, D = 8, 4
-    combined = _assemble(jnp.ones((seq_len, D)), 2 * jnp.ones((seq_len, D)),
-                         n_ctx=5, n_tgt=3, seq_len=seq_len)
+    combined = _assemble(
+        jnp.ones((seq_len, D)),
+        2 * jnp.ones((seq_len, D)),
+        n_ctx=5,
+        n_tgt=3,
+        seq_len=seq_len,
+    )
     assert jnp.array_equal(combined[:5], jnp.ones((5, D)))
     assert jnp.array_equal(combined[5:], 2 * jnp.ones((3, D)))
 
@@ -178,6 +206,7 @@ def test_predictor_full_packing():
 # ---------------------------------------------------------------------------
 # Encoder
 # ---------------------------------------------------------------------------
+
 
 def test_encoder_unmasked():
     """With mask=None, encoder returns all patches in identity order [0, 1, ..., n_patches)."""
@@ -221,6 +250,7 @@ def test_encoder_isolation():
 # ---------------------------------------------------------------------------
 # Full IJEPA composition
 # ---------------------------------------------------------------------------
+
 
 def test_ijepa_shapes():
     """Forward returns z_pred of shape [seq_len, enc_dim], plus tgt_indices and n_tgt."""
@@ -276,15 +306,15 @@ def test_encoder_excludes_targets():
     x = jax.random.normal(jax.random.key(1), IMG_SHAPE)
     mp = jnp.zeros((1, 16), dtype=bool).at[0, jnp.array([4, 5])].set(True)
 
-    mc_a = _bool_mask(16, list(range(8)))                # {0..7}, includes targets
-    mc_b = _bool_mask(16, [0, 1, 2, 3, 6, 7])            # already excludes targets
+    mc_a = _bool_mask(16, list(range(8)))  # {0..7}, includes targets
+    mc_b = _bool_mask(16, [0, 1, 2, 3, 6, 7])  # already excludes targets
 
     z_a, ti_a, n_a = model(None, x, mc_a, mp, train=False)
     z_b, ti_b, n_b = model(None, x, mc_b, mp, train=False)
 
     assert int(n_a) == int(n_b) == 2
-    assert jnp.array_equal(ti_a[:int(n_a)], ti_b[:int(n_b)])
-    assert jnp.allclose(z_a[:int(n_a)], z_b[:int(n_b)], atol=1e-4)
+    assert jnp.array_equal(ti_a[: int(n_a)], ti_b[: int(n_b)])
+    assert jnp.allclose(z_a[: int(n_a)], z_b[: int(n_b)], atol=1e-4)
 
 
 def test_roll_alignment():

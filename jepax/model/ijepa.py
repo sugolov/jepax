@@ -261,7 +261,7 @@ class IJEPAEncoder(eqx.Module):
         x = self.embed(x)  # [N_patches, D]
         n_patches = x.shape[0]
 
-        # i guess we either permute PE or attention mask? 
+        # i guess we either permute PE or attention mask?
         x = self.pe(x)
 
         if mask is not None:
@@ -285,14 +285,14 @@ class IJEPAEncoder(eqx.Module):
             attn_mask=attn_mask,
             key=key,
             train=train,
-            use_pe=False,       # already subsetted with PE
+            use_pe=False,  # already subsetted with PE
             get_intermediates=get_intermediates,
         )
 
         if get_intermediates:
             out, intermediates = out
             return out, intermediates, indices
-            
+
         return out, indices
 
 
@@ -376,29 +376,34 @@ class IJEPAPredictor(eqx.Module):
         # TODO: rethink PE implementation?
         ctx_pos = compute_2d_pe(
             ctx_indices, self.grid_size, self.latent_dim, dtype=dtype
-        )                       
-        ctx_proj = ctx_proj + ctx_pos               # [n_ctx, latent_dim]
+        )
+        ctx_proj = ctx_proj + ctx_pos  # [n_ctx, latent_dim]
 
         # Create pred_tokens with target positional embeddings
         tgt_pos = compute_2d_pe(
             tgt_indices, self.grid_size, self.latent_dim, dtype=dtype
         )
-        pred_tokens = self.pred_token + tgt_pos     # [n_tgt, latent_dim]
+        pred_tokens = self.pred_token + tgt_pos  # [n_tgt, latent_dim]
 
         # Place context + target tokens
         n_total = n_ctx + n_tgt
-        ctx_mask = jnp.arange(seq_len) < n_ctx                          # context mask, [0, n_ctx) of [0, seq_len)
-        tgt_mask = (jnp.arange(seq_len) >= n_ctx) & (jnp.arange(seq_len) < n_total)     # tgt mask, [n_ctx, n_total) of [0, seq_len)
+        ctx_mask = (
+            jnp.arange(seq_len) < n_ctx
+        )  # context mask, [0, n_ctx) of [0, seq_len)
+        tgt_mask = (jnp.arange(seq_len) >= n_ctx) & (
+            jnp.arange(seq_len) < n_total
+        )  # tgt mask, [n_ctx, n_total) of [0, seq_len)
         pred_idx = jnp.clip(jnp.arange(seq_len) - n_ctx, 0, seq_len - 1)
-        
-        # vals:  (ctx_proj, pred_tokens, zeros) 
+
+        # vals:  (ctx_proj, pred_tokens, zeros)
         # idx:   ([0, n_ctx), [n_ctx, n_total), [n_total, seq_len))
-        combined = jnp.where(ctx_mask[:, None], ctx_proj, 0.0) \
-            + jnp.where(tgt_mask[:, None], pred_tokens[pred_idx], 0.0)
+        combined = jnp.where(ctx_mask[:, None], ctx_proj, 0.0) + jnp.where(
+            tgt_mask[:, None], pred_tokens[pred_idx], 0.0
+        )
 
         # attn: only attend to first total_valid positions
         valid_mask = jnp.arange(seq_len) < n_total
-        attn_mask = valid_mask[:, None] & valid_mask[None, :]   # mask across both axes
+        attn_mask = valid_mask[:, None] & valid_mask[None, :]  # mask across both axes
 
         out = self.transformer(
             combined, attn_mask=attn_mask, key=key, train=train, use_pe=False
@@ -411,7 +416,7 @@ class IJEPAPredictor(eqx.Module):
 
 
 class IJEPA(eqx.Module):
-    encoder: IJEPAEncoder 
+    encoder: IJEPAEncoder
     predictor: IJEPAPredictor
 
     def __init__(self, encoder: IJEPAEncoder, predictor: IJEPAPredictor):
