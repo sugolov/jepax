@@ -1,3 +1,7 @@
+"""
+ViT classification file, good base for general model creation.
+"""
+
 import equinox as eqx
 import jax
 from jax import numpy as jnp

@@ -66,3 +66,9 @@ python -m jepax.train.train_ijepa \
 ## See Also
 
 Other JAX libraries: [Awesome JAX](https://github.com/lockwo/awesome-jax).
+
+## Contributing
+
+```
+uv run pre-commit run --all-files
+```
