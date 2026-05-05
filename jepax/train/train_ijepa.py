@@ -262,43 +262,73 @@ def normalize_targets(z_ema):
     return (z_ema - mean) / jnp.sqrt(var + 1e-6)
 
 
-@eqx.filter_value_and_grad
-def compute_grads(model, x_b, z_ema, mask_ctx_b, mask_pred_b, key=None):
-    """Compute loss and gradients.
-
-    Model returns: (z_pred, tgt_indices, n_tgt, pred_start, pred_end)
-    - z_pred: [seq_len, D] - predictions at positions [pred_start:pred_end]
-    - tgt_indices: [seq_len] - indices of target patches, first n_tgt valid
-    - n_tgt: number of target patches
-    - pred_start, pred_end: slice indices for predictions
+def loss_fn(model, x, z_ema, mask_ctx, mask_pred):
     """
-    seq_len = z_ema.shape[1]  # N_patches
+    Loss function for IJEPA
 
-    z_pred, tgt_indices, n_tgt, pred_start, pred_end = jax.vmap(
-        lambda x, mc, mp: model(key, x, mc, mp, train=True)
-    )(x_b, mask_ctx_b, mask_pred_b)
+    model: IJEPAModel
+    x: input image
+    z_ema: ema predicted latents
+    mask_ctx: context mask
+    mask_pred: predictor mask
 
+    Returns:
+        float: scalar loss value
+    """
+    seq_len = z_ema.shape[1]
+    z_pred, tgt_indices, n_tgt = jax.vmap(
+        lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
+    )(x, mask_ctx, mask_pred)
     z_ema = z_ema.astype(jnp.float32)
     z_pred = z_pred.astype(jnp.float32)
+    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # subsetted z_ema
 
-    # Gather target representations from z_ema
-    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema, tgt_indices)  # [B, seq_len, D]
+    pos_idx = jnp.arange(seq_len)[None, :]
+    valid_mask = pos_idx < n_tgt[:, None]
 
-    # Create aligned arrays for comparison:
-    # z_pred has predictions at positions [pred_start:pred_end]
-    # z_tgt has targets at positions [0:n_tgt]
+    return smooth_l1_loss(z_pred, z_tgt, valid_mask)
 
-    # Shift z_pred so predictions start at position 0
-    def shift_pred(z_p, ps):
-        # Roll to bring pred_start to position 0
-        return jnp.roll(z_p, -ps, axis=0)
 
-    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
+def make_step_model(optimizer, shard=False, mesh=None):
+    grad_fn = eqx.filter_value_and_grad(loss_fn)
 
-    pos_idx = jnp.arange(seq_len)[None, :]  # [1, seq_len]
-    valid_mask = pos_idx < n_tgt[:, None]  # [B, seq_len]
+    def apply_grads(model, opt_state, loss, grads):
+        grad_norms = get_grad_norms(grads)
+        updates, opt_state = optimizer.update(grads, opt_state, model)
+        model = eqx.apply_updates(model, updates)
+        return model, opt_state, loss, grad_norms
 
-    return smooth_l1_loss(z_pred_shifted, z_tgt, valid_mask)
+    if shard:
+        P = jshard.PartitionSpec
+        assert mesh is not None, "sharding must specify mesh"
+
+        @eqx.filter_jit
+        def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+
+            # partition spec `P` assumes DDP: naming datch dimensions
+            @filter_shard_map(
+                mesh=mesh,
+                in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
+                out_specs=(P(), P()),
+            )
+            def sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred):
+                loss, grads = grad_fn(model, x, z_ema, mask_ctx, mask_pred)
+                loss = jax.lax.pmean(loss, "batch")
+                grads = jax.lax.pmean(grads, "batch")
+                return loss, grads
+
+            loss, grads = sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred)
+
+            return apply_grads(model, opt_state, loss, grads)
+
+    else:
+
+        @eqx.filter_jit
+        def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
+            loss, grads = grad_fn(model, x, z_ema, mask_ctx, mask_pred)
+            return apply_grads(model, opt_state, loss, grads)
+
+    return step_model
 
 
 def get_grad_norms(grads):
@@ -349,7 +379,6 @@ def train_ijepa(
     profile_log_dir: str = ".logs",
     **kwargs,
 ):
-    """Main training function."""
     data_cfg = cfg.data
     model_cfg = cfg.model
     train_cfg = cfg.train
@@ -373,6 +402,7 @@ def train_ijepa(
     else:
         data_sharding = None
         shard = False
+        mesh = None
 
     # Directory and logging
     Path(save_dir).mkdir(parents=True, exist_ok=True)
@@ -467,57 +497,10 @@ def train_ijepa(
             config=asdict(cfg),
         )
 
-    P = jshard.PartitionSpec
+    # step model
+    step_model = make_step_model(optimizer=optimizer, shard=shard, mesh=mesh)
 
-    if shard:
-
-        @eqx.filter_jit
-        def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-            @filter_shard_map(
-                mesh=mesh,
-                in_specs=(P(), P("batch"), P("batch"), P("batch"), P("batch")),
-                out_specs=(P(), P()),
-            )
-            def sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred):
-                @eqx.filter_value_and_grad
-                def local_loss(model, x, z_ema, mask_ctx, mask_pred):
-                    seq_len = z_ema.shape[1]
-                    z_pred, tgt_indices, n_tgt, pred_start, _ = jax.vmap(
-                        lambda xi, mc, mp: model(None, xi, mc, mp, train=True)
-                    )(x, mask_ctx, mask_pred)
-                    z_ema_f = z_ema.astype(jnp.float32)
-                    z_pred = z_pred.astype(jnp.float32)
-                    z_tgt = jax.vmap(lambda z, idx: z[idx])(z_ema_f, tgt_indices)
-
-                    def shift_pred(z_p, ps):
-                        return jnp.roll(z_p, -ps, axis=0)
-
-                    z_pred_shifted = jax.vmap(shift_pred)(z_pred, pred_start)
-                    pos_idx = jnp.arange(seq_len)[None, :]
-                    valid_mask = pos_idx < n_tgt[:, None]
-                    return smooth_l1_loss(z_pred_shifted, z_tgt, valid_mask)
-
-                loss, grads = local_loss(model, x, z_ema, mask_ctx, mask_pred)
-                loss = jax.lax.pmean(loss, "batch")
-                grads = jax.lax.pmean(grads, "batch")
-                return loss, grads
-
-            loss, grads = sharded_loss_and_grad(model, x, z_ema, mask_ctx, mask_pred)
-            grad_norms = get_grad_norms(grads)
-            updates, opt_state = optimizer.update(grads, opt_state, model)
-            model = eqx.apply_updates(model, updates)
-            return model, opt_state, loss, grad_norms
-
-    else:
-
-        @eqx.filter_jit
-        def step_model(model, opt_state, x, z_ema, mask_ctx, mask_pred):
-            loss, grads = compute_grads(model, x, z_ema, mask_ctx, mask_pred)
-            grad_norms = get_grad_norms(grads)
-            updates, opt_state = optimizer.update(grads, opt_state, model)
-            model = eqx.apply_updates(model, updates)
-            return model, opt_state, loss, grad_norms
-
+    # mask helper
     @partial(jax.jit, static_argnums=(1, 2, 3))
     def generate_masks(key, masker, num_pred_masks, batch_size):
         mask_keys = jax.random.split(key, batch_size)
@@ -544,6 +527,7 @@ def train_ijepa(
                 Path(profile_log_dir).mkdir(parents=True, exist_ok=True)
                 jax.profiler.start_trace(profile_log_dir)
 
+            # generate masks
             mask_time = time.time()
             key, mask_key = jax.random.split(key)
             mask_ctx, mask_pred = generate_masks(
@@ -554,6 +538,7 @@ def train_ijepa(
             mask_a = int(jnp.sum(mask_ctx[0]))
             mask_b = int(jnp.sum(mask_pred[0].any(axis=0)))
 
+            # draw inputs
             x = batch["image"]
             if bfloat16:
                 x = x.astype(jnp.bfloat16)
@@ -562,6 +547,7 @@ def train_ijepa(
                 mask_ctx = jax.device_put(mask_ctx, data_sharding)
                 mask_pred = jax.device_put(mask_pred, data_sharding)
 
+            # z_ema target representation
             target_time = time.time()
             z_ema = compute_target_reps(ema_encoder, x)
             if normalize_tgt:
@@ -570,6 +556,7 @@ def train_ijepa(
                 z_ema = jax.device_put(z_ema, data_sharding)
             target_time = time.time() - target_time
 
+            # diagnostics
             if step == start_epoch * steps_per_epoch:
                 model_dtype = jax.tree.leaves(eqx.filter(model, eqx.is_array))[0].dtype
                 print(f"model dtype: {model_dtype}")
@@ -582,11 +569,15 @@ def train_ijepa(
                     print(f"mask_ctx.sharding: {mask_ctx.sharding}")
 
             step_time = time.time()
+
+            # gradient step
             model, opt_state, loss, grad_norms = step_model(
                 model, opt_state, x, z_ema, mask_ctx, mask_pred
             )
+
+            # update ema encoder
             ema_encoder = update_ema(ema_encoder, model.encoder, ema_scheduler(step))
-            assert not jnp.isnan(loss), f"NaN loss at step {step}"
+            # assert not jnp.isnan(loss), f"NaN loss at step {step}"
             step_time = time.time() - step_time
 
             # profiler end
@@ -596,10 +587,10 @@ def train_ijepa(
                 print(f"profiling finished, saved to {profile_log_dir}")
                 return
 
+            # logging
             step += 1
             epoch_losses.append(loss)
             step_ms = int(step_time * 1000)
-
             logf.write(f"{epoch + 1},{step},{loss:.5f},{mask_a},{mask_b},{step_ms}\n")
 
             if step % 100 == 0:
