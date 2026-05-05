@@ -1,4 +1,5 @@
 import jax
+
 from jepax.model.transformer import (
     Attention,
     FeedForward,
