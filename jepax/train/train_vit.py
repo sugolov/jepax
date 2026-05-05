@@ -10,7 +10,7 @@ import optax
 from jax import numpy as jnp
 from tqdm import tqdm
 
-from jepax.data import build_torch_dataloader
+from jepax.data import build_dataloader
 from jepax.model import get_vit_clf_model
 
 
@@ -77,7 +77,8 @@ def evaluate(model, dataloader, key):
     losses = []
     accs = []
 
-    for x, y in dataloader:
+    for batch in dataloader:
+        x, y = batch["image"], batch["label"]
         key, subkey = jax.random.split(key)
         # Create keys for each sample in batch
         subkeys = jax.random.split(subkey, num=x.shape[0])
@@ -107,20 +108,24 @@ def train_vit_cifar10(args):
         logf.write("Epoch,Train_Loss,Test_Loss,Test_Acc\n")
 
     # create dataset
-    dataloader, num_classes, n_batch, image_size = build_torch_dataloader(
+    dataloader, num_classes, _, _ = build_dataloader(
         args.data_name,
         args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         is_train=True,
+        seed=args.seed,
+        normalize=True,
     )
 
-    test_dataloader, _, _, _ = build_torch_dataloader(
+    test_dataloader, _, _, _ = build_dataloader(
         args.data_name,
         args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         is_train=False,
+        seed=args.seed,
+        normalize=True,
     )
 
     # initialize model state
@@ -143,7 +148,8 @@ def train_vit_cifar10(args):
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch + 1}/{args.epochs}")
 
-        for x, y in pbar:
+        for batch in pbar:
+            x, y = batch["image"], batch["label"]
             key, *subkeys = jax.random.split(key, num=x.shape[0] + 1)
             subkeys = jnp.array(subkeys)
 
