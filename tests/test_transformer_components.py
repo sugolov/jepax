@@ -20,9 +20,8 @@ def test_attention():
     key = jax.random.PRNGKey(0)
     attn = Attention(dim=64, num_head=4, key=key)
     x = jax.random.normal(key, (10, 64))
-    out, weights = attn(x)
+    out = attn(x)
     assert out.shape == (10, 64)
-    assert weights.shape == (4, 10, 10)
     print("✓ Attention")
 
 

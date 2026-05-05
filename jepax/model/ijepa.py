@@ -407,7 +407,7 @@ class IJEPAPredictor(eqx.Module):
         out = jax.vmap(self.out_proj)(out)
 
         # Return predictions at target positions (n_ctx to n_ctx + n_tgt)
-        return out, n_ctx, n_total
+        return out
 
 
 class IJEPA(eqx.Module):
@@ -421,7 +421,7 @@ class IJEPA(eqx.Module):
     def __call__(self, key: Key, x: Array, mask_ctx, mask_pred, train=True):
         """
         Args:
-            x: image [H, W, C]
+            x: image [C H W]
             mask_ctx: context mask [N_patches], True = context (flat)
             mask_pred: target masks [M, N_patches], True = target position (flattened)
         """
@@ -443,7 +443,7 @@ class IJEPA(eqx.Module):
         n_patches = tgt_flat.shape[0]
         tgt_indices, n_tgt = mask_to_indices(tgt_flat, n_patches)
 
-        z_pred, pred_start, pred_end = self.predictor(
+        z_pred = self.predictor(
             k2,
             ctx_emb=z_enc,
             ctx_indices=ctx_indices,
